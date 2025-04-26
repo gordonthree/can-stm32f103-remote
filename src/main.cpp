@@ -1,27 +1,8 @@
-// #ifdef CORE_DEBUG_LEVEL
-// #undef CORE_DEBUG_LEVEL
-// #endif
-
-// #define CORE_DEBUG_LEVEL 3
-// #define LOG_LOCAL_LEVEL ESP_LOG_DEBUG
-
 #include <Arduino.h>
 #include <stdio.h>
 
-
-#include <STM32FreeRTOS.h>
-
 // Load FastLED
-#include <FastLED.h>
-
-// Webserver and file system
-// #define SPIFFS LittleFS
-// #include <LittleFS.h>
-// #include <ArduinoJson.h> // https://github.com/bblanchon/ArduinoJson?utm_source=platformio&utm_medium=piohome
-
-
-// my secrets
-#include "secrets.h"
+// #include <FastLED.h>
 
 // my canbus stuff
 #include "canbus_msg.h"
@@ -30,19 +11,19 @@
 #define CAN_MY_IFACE_TYPE IFACE_TOUCHSCREEN_TYPE_A
 #define CAN_SELF_MSG 1
 
+#include <eXoCAN.h>
+#include <IWatchdog.h>
 
-#include "STM32_CAN.h"
-#include "STM32FreeRTOS.h"
+eXoCAN can(STD_ID_LEN, BR500K, PORTB_8_9_XCVR); // constructor
 
-//STM32_CAN Can( CAN1, DEF );  //Use PA11/12 pins for CAN1.
-STM32_CAN Can( CAN1, ALT );  //Use PB8/9 pins for CAN1.
-//STM32_CAN Can( CAN1, ALT_2 );  //Use PD0/1 pins for CAN1.
-//STM32_CAN Can( CAN2, DEF );  //Use PB12/13 pins for CAN2.
-//STM32_CAN Can( CAN2, ALT );  //Use PB5/6 pins for CAN2
-//STM32_CAN Can( CAN3, DEF );  //Use PA8/15 pins for CAN3.
-//STM32_CAN Can( CAN3, ALT );  //Use PB3/4 pins for CAN3
+template <typename T>
+void cpArray(T from[], T to[], int len) // copies one array to another
+{
+  for (int i = 0; i < len; i++)
+    to[i] = from[i];
+}
 
-static CAN_message_t CAN_TX_msg;
+struct msgFrm frame[1]; // an array of tx structures
 
 // Intervall:
 #define TRANSMIT_RATE_MS 1000
@@ -61,54 +42,12 @@ static const char *TAG = "can_control";
 #define NUM_LEDS 1
 #define DATA_PIN PC14
 
-const char* ssid = SECRET_SSID;
-const char* password = SECRET_PSK;
-const char* hostname =AP_SSID;
-
 int period = 1000;
 int8_t ipCnt = 0;
 
 unsigned long time_now = 0;
 
-CRGB leds[NUM_LEDS];
-
-
-static void send_message( uint16_t msgid, uint8_t *data, uint8_t dlc) {
-  static twai_message_t message;
-  static uint8_t dataBytes[] = {0, 0, 0, 0, 0, 0, 0, 0}; // initialize dataBytes array with 8 bytes of 0
-
-  // Format message
-  message.identifier = msgid;       // set message ID
-  message.extd = 0;                 // 0 = standard frame, 1 = extended frame
-  message.rtr = 0;                  // 0 = data frame, 1 = remote frame
-  message.self = CAN_SELF_MSG;      // 0 = normal transmission, 1 = self reception request 
-  message.dlc_non_comp = 0;         // non-compliant DLC (0-8 bytes)  
-  message.data_length_code = dlc;   // data length code (0-8 bytes)
-  memcpy(message.data, data, dlc);  // copy data to message data field 
-  
-  // Queue message for transmission
-  if (twai_transmit(&message, pdMS_TO_TICKS(3000)) == ESP_OK) {
-    // ESP_LOGI(TAG, "Message queued for transmission\n");
-    // printf("Message queued for transmission\n");
-  } else {
-    leds[0] = CRGB::Red;
-    FastLED.show();
-    // ESP_LOGE(TAG, "Failed to queue message for transmission, initiating recovery");
-    printf("Failed to queue message for transmission, resetting controller\n");
-    twai_initiate_recovery();
-    twai_stop();
-    printf("twai Stoped\n");
-    vTaskDelay(500);
-    twai_start();
-    printf("twai Started\n");
-    // ESP_LOGI(TAG, "twai restarted\n");
-    // wifiOnConnect();
-    vTaskDelay(500);
-    leds[0] = CRGB::Black;
-    FastLED.show();
-  }
-  // vTaskDelay(100);
-}
+// CRGB leds[NUM_LEDS];
 
 static void setDisplayMode(uint8_t *data, uint8_t displayMode) {
   // uint8_t dataBytes[] = {0xA0, 0xA0, 0x55, 0x55, 0x7F, 0xE4}; // data bytes
@@ -213,17 +152,17 @@ static void setSwitchState(uint8_t *data, uint8_t swState) {
 
 static void sendIntroduction() {
   uint8_t dataBytes[] = {0xA0, 0xA0, 0x55, 0x55, 0x7F, 0xE4}; // data bytes
-  send_message(CAN_MY_IFACE_TYPE, dataBytes, sizeof(dataBytes));
+  // send_message(CAN_MY_IFACE_TYPE, dataBytes, sizeof(dataBytes));
 
 }
 
 static void sendIntroack() {
   uint8_t dataBytes[] = {0xA0, 0xA0, 0x55, 0x55}; // data bytes
-  send_message(ACK_INTRODUCTION, dataBytes, sizeof(dataBytes));
+  // send_message(ACK_INTRODUCTION, dataBytes, sizeof(dataBytes));
 }
 
 
-static void handle_rx_message(twai_message_t &message) {
+/* static void handle_rx_message(twai_message_t &message) {
   // static twai_message_t altmessage;
   static bool msgFlag = false;
   
@@ -308,10 +247,10 @@ static void handle_rx_message(twai_message_t &message) {
       break;
   }
 
-
 } // end of handle_rx_message
+*/
 
-
+/* 
 void TaskTWAI(void *pvParameters) {
   // give some time at boot the cpu setup other parameters
   vTaskDelay(1000 / portTICK_PERIOD_MS);
@@ -424,23 +363,172 @@ void TaskTWAI(void *pvParameters) {
   }
 }
 
+*/
+
+uint8_t frmData[5][8] = {
+    // arrays of tx msg data fields
+    {0x00, 0xff, 0xff, 0x00, 0x00, 0xff, 0xff, 0xff}, // [0][]
+    {0x01, 0xa5, 0x00, 0x00, 0x5a, 0x5a, 0x5a, 0xff}, // [1][]
+    {0x02, 0xe7, 0xe7, 0xe7, 0xe7, 0xe7, 0xe7, 0xe7}, // [2][]
+    {0x03, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07}, // [3][]
+    {0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}  // [4][]
+};
+
+uint8_t frameIdx = 0; // index of tx frame[] to send. In this example it isn't useful as there is only one 'frame[1]'
+uint8_t msgNum = 1;   // index of tx data to send   <<<<<<----------<<<<<<
+
+void initFrame()
+{
+  int frmDataIdx = 0; // index of desired frmData[frmDataIdx]
+  switch (msgNum)
+  {
+  case 0:
+    frmDataIdx = 0;
+    frame[frameIdx].txMsgID = 0x05;
+    frame[frameIdx].idLen = STD_ID_LEN;
+    frame[frameIdx].txDly = 500;
+    frame[frameIdx].busConfig = PORTA_11_12_WIRE_PULLUP; //PORTB_8_9_WIRE_PULLUP;
+    break;
+  case 1:
+    frmDataIdx = 1;
+    frame[frameIdx].txMsgID = 0x7ff; //daf110; // 0x69;
+    frame[frameIdx].idLen = STD_ID_LEN;
+    frame[frameIdx].txDly = 1000;
+    frame[frameIdx].busConfig = PORTA_11_12_XCVR; //PORTA_11_12_XCVR;
+    break;
+  case 2:
+    frmDataIdx = 2;
+    frame[frameIdx].txMsgID = 0x69;
+    frame[frameIdx].idLen = STD_ID_LEN;
+    frame[frameIdx].txDly = 1500;
+    frame[frameIdx].busConfig = PORTB_8_9_XCVR;
+    break;
+  case 3:
+    frmDataIdx = 3;
+    frame[frameIdx].txMsgID = 0x69;
+    frame[frameIdx].idLen = EXT_ID_LEN;
+    frame[frameIdx].txDly = 4000;
+    frame[frameIdx].busConfig = PORTB_8_9_XCVR;
+    break;
+  case 4:
+    frmDataIdx = 4;
+    frame[frameIdx].txMsgID = 0x00232461; //0x69;
+    frame[frameIdx].idLen = EXT_ID_LEN;
+    frame[frameIdx].txDly = 1100;
+    frame[frameIdx].busConfig = PORTA_11_12_XCVR;
+    break;
+
+  default:
+    break;
+  }
+  int mLen = sizeof(frmData[0]) / sizeof(frmData[0][0]);
+  cpArray(frmData[frmDataIdx], frame[frameIdx].txMsg.bytes, mLen); // copy '8' values
+}
+
+char cBuff[46]; // holds formatted string
+
+inline void canSend(msgFrm frm, bool prt = false) //send a CAN Bus message
+{
+  bool status = can.transmit(frm.txMsgID, frm.txMsg.bytes, frm.txMsgLen);
+  if (prt)
+  {
+    if (status == false)
+    {
+      Serial.println("   *** TX ERROR ***");
+      Serial.println("   mailbox not empty ");
+    }
+    else
+    {
+      if (can.getIDType())
+        sprintf(cBuff, "tx @%08x #%u \t", frm.txMsgID, frm.txMsgLen);
+      else
+        sprintf(cBuff, "tx @%03x #%u \t", frm.txMsgID, frm.txMsgLen);
+      Serial.print(cBuff);
+      for (u_int8_t j = 0; j < frm.txMsgLen; j++)
+      {
+        sprintf(cBuff, "%02X ", frm.txMsg.bytes[j]);
+        Serial.print(cBuff);
+      }
+      Serial.println();
+    }
+  }
+}
+
+inline void canRead(bool print = false) //check for a CAN Bus message
+{
+  //len = can.receive(id, fltIdx, rxMsg.bytes);  // comment out when using rx interrupt
+  uint8_t cnt = can.getRxMsgFifo0Cnt();
+  uint8_t full = can.getRxMsgFifo0Full();
+  uint8_t ovr = can.getRxMsgFifo0Overflow();
+
+  if (can.rxMsgLen >= 0)
+  {
+    if (print)
+    {
+      if (can.getRxIDType())
+        sprintf(cBuff, "RX @%08x #%d  %d\t", can.id, can.rxMsgLen, can.fltIdx);
+      else
+        sprintf(cBuff, "RX @%03x #%d  %d\t", can.id, can.rxMsgLen, can.fltIdx);
+
+      Serial.print(cBuff);
+      for (uint8_t j = 0; j < can.rxMsgLen; j++)
+      {
+        sprintf(cBuff, "%02x ", can.rxData.bytes[j]);
+        Serial.print(cBuff);
+      }
+      if (can.getRxMsgFifo0Cnt()) // check if loop is able to keep up with bus messages
+      {
+        sprintf(cBuff, " cnt %d, full %d, overflow %d ", cnt, full, ovr);
+        Serial.print(cBuff);
+      }
+      Serial.println();
+    }
+    digitalToggle(PC13); // blink LED
+    can.rxMsgLen = -1;
+  }
+  // return id;
+}
+
+void canISR() // get bus msg frame passed by a filter to FIFO0
+{
+  can.rxMsgLen = can.receive(can.id, can.fltIdx, can.rxData.bytes); // get CAN msg
+}
+
+
 void setup() {
+  pinMode(PC13, OUTPUT); // blue pill LED
   delay(5000);
 
-  Can.begin();
-  //Can.setBaudRate(250000);  //250KBPS
-  Can.setBaudRate(500000);  //500KBPS
+  can.begin(frame[frameIdx].idLen, BR500K, frame[frameIdx].busConfig); // CAN was constructed with user parms, this sets new parms
+  can.setAutoTxRetry(true);                                            // CAN hw keeps sending last tx until someone ACK's it
+  can.attachInterrupt(canISR);
 
-  FastLED.addLeds<SK6812, DATA_PIN, GRB>(leds, NUM_LEDS);
+/*   FastLED.addLeds<SK6812, DATA_PIN, GRB>(leds, NUM_LEDS);
   leds[0] = CRGB::Black;
   FastLED.show();
-
+ */
   Serial.begin(115200);
-  Serial.setDebugOutput(true);
 
 }
 
-void loop() {
+int lastPending = 0;
+uint32_t last = 0;
+void loop()
+{
+  //----------------------------------tx-------------------/-------------
+  if (millis() / frame[frameIdx].txDly != last)
+  {
+    last = millis() / frame[frameIdx].txDly;
+    frame[0].txMsg.int32[1] = millis(); // last 4 bytes of CAN msg
+    frame[0].txMsg.int32[0] = 0;        // first four bytes = 0
+    // frame[frameIdx].txMsg.int64 = 0x0807060504030201;
+    Serial.println();
+    canSend(frame[frameIdx], true);
+    Serial.println();
+  }
 
-  // NOP;
-}
+  delay(120);
+  // ----------------------------------rx----------------------------
+  canRead(true);
+  // IWatchdog.reload();
+} // end of loop
