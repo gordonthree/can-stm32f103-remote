@@ -8,13 +8,13 @@
 #include "canbus_msg.h"
 #include "canbus_flags.h"
 
-#define CAN_MY_IFACE_TYPE IFACE_TOUCHSCREEN_TYPE_A
+#define CAN_MY_IFACE_TYPE BOX_SW_6GANG_HIGH
 #define CAN_SELF_MSG 1
 
 #include <eXoCAN.h>
 #include <IWatchdog.h>
 
-eXoCAN can(STD_ID_LEN, BR500K, PORTB_8_9_XCVR); // constructor
+eXoCAN can(STD_ID_LEN, BR250K, PORTB_8_9_XCVR); // constructor
 
 template <typename T>
 void cpArray(T from[], T to[], int len) // copies one array to another
@@ -379,7 +379,7 @@ uint8_t msgNum = 1;   // index of tx data to send   <<<<<<----------<<<<<<
 
 void initFrame()
 {
-  int frmDataIdx = 0; // index of desired frmData[frmDataIdx]
+  int frmDataIdx = 2; // index of desired frmData[frmDataIdx]
   switch (msgNum)
   {
   case 0:
@@ -497,38 +497,66 @@ void canISR() // get bus msg frame passed by a filter to FIFO0
 
 void setup() {
   pinMode(PC13, OUTPUT); // blue pill LED
+  Serial.begin(115200);
   delay(5000);
 
-  can.begin(frame[frameIdx].idLen, BR500K, frame[frameIdx].busConfig); // CAN was constructed with user parms, this sets new parms
-  can.setAutoTxRetry(true);                                            // CAN hw keeps sending last tx until someone ACK's it
+  can.begin(STD_ID_LEN, BR250K, PORTB_8_9_XCVR);           // CAN was constructed with user parms, this sets new parms
+  can.setAutoTxRetry(false);                               // CAN hw keeps sending last tx until someone ACK's it
   can.attachInterrupt(canISR);
 
 /*   FastLED.addLeds<SK6812, DATA_PIN, GRB>(leds, NUM_LEDS);
   leds[0] = CRGB::Black;
   FastLED.show();
  */
-  Serial.begin(115200);
+  Serial.println("CAN Bus Test");
+  
+  frame[0].busConfig = PORTB_8_9_XCVR; // set bus type for this frame
+  frame[0].txMsgID = REQ_SWITCHBOX;             // set tx msg ID for this frame
+  frame[0].txDly = POLLING_RATE_MS; // set tx delay for this frame
 
 }
 
 int lastPending = 0;
 uint32_t last = 0;
+int lastMillis = 0;
+int id;
+int fltIdx;
+uint8_t rxbytes[8];
+
 void loop()
 {
-  //----------------------------------tx-------------------/-------------
-  if (millis() / frame[frameIdx].txDly != last)
+  if (millis() - lastMillis >= POLLING_RATE_MS) // every 1 sec
   {
-    last = millis() / frame[frameIdx].txDly;
+    lastMillis = millis();
+    Serial.print(".");
+    digitalToggle(PC13); // blink LED
     frame[0].txMsg.int32[1] = millis(); // last 4 bytes of CAN msg
     frame[0].txMsg.int32[0] = 0;        // first four bytes = 0
     // frame[frameIdx].txMsg.int64 = 0x0807060504030201;
     Serial.println();
-    canSend(frame[frameIdx], true);
+    canSend(frame[0], true);
     Serial.println();
   }
+  //----------------------------------tx-------------------/-------------
+  // if (millis() / frame[frameIdx].txDly != last)
+  // {
+  //   last = millis() / frame[frameIdx].txDly;
+  //   frame[0].txMsg.int32[1] = millis(); // last 4 bytes of CAN msg
+  //   frame[0].txMsg.int32[0] = 0;        // first four bytes = 0
+  //   // frame[frameIdx].txMsg.int64 = 0x0807060504030201;
+  //   Serial.println();
+  //   canSend(frame[frameIdx], true);
+  //   Serial.println();
+  // }
 
-  delay(120);
+  // delay(120);
   // ----------------------------------rx----------------------------
   canRead(true);
+
+  // if (can.receive(id, fltIdx, rxbytes) > -1) // poll for rx
+  // { 
+  //   digitalToggle(PC13);
+  // }
+
   // IWatchdog.reload();
 } // end of loop
