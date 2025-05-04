@@ -4,6 +4,7 @@
 
 // Load FastLED
 // #include <FastLED.h>
+#include <CRC32.h>
 
 // canbus stuff
 #include <STM32_CAN.h>
@@ -15,8 +16,9 @@ static CAN_message_t CAN_RX_msg;
 #define CAN_MY_IFACE_TYPE BOX_SW_6GANG_HIGH
 #define CAN_SELF_MSG 1
 
+CRC32 crc;
 
-STM32_CAN can1( CAN1, ALT );
+STM32_CAN can1( CAN1, ALT ); // RX_SIZE_64, TX_SIZE_16
 
 template <typename T>
 void cpArray(T from[], T to[], int len) // copies one array to another
@@ -69,16 +71,33 @@ static volatile uint8_t myNodeID[] = {0, 0, 0, 0}; // node ID
 
 void getmyNodeID(){
 
+  // get unique hardware id from HAL
   UID[0] = HAL_GetUIDw0();
   UID[1] = HAL_GetUIDw1();
   UID[2] = HAL_GetUIDw2();
 
-  Serial.printf("UID: %08x:%08x:%08x\n", UID[0], UID[1], UID[2]);
+  // show the user
+  // Serial.printf("UID: %08x:%08x:%08x\n", UID[0], UID[1], UID[2]);
 
-  //   Serial.printf("Node ID: %02x:%02x:%02x:%02x\n", myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3]);
-  // } else {
-  //   Serial.println("Failed to set NODE ID");
-  // }
+  // add UID values to CRC calulation library
+  crc.add(UID[0]);
+  crc.add(UID[1]);
+  crc.add(UID[2]);
+
+  // show the user
+  // Serial.printf("CRC %08x\n", crc.calc());
+
+  // calculate 32-bit crc value from the uid
+  int myCRC = crc.calc();
+
+  // transfer those four bytes to myNodeID array
+  myNodeID[0] = (myCRC >> 24) & 0xFF; // get first byte of CRC
+  myNodeID[1] = (myCRC >> 16) & 0xFF; // get second byte of CRC
+  myNodeID[2] = (myCRC >> 8) & 0xFF;  // get third byte of CRC
+  myNodeID[3] = myCRC & 0xFF;         // get fourth byte of CRC
+
+  // show the user
+  Serial.printf("CAN Remote Node ID: %02x:%02x:%02x:%02x\n\n", myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3]);
 }
 
 
@@ -113,50 +132,21 @@ static void dumpSwitches() {
 
 static void send_message(const uint16_t msgID, const uint8_t *msgData, const uint8_t dlc) {
   CAN_message_t message;
-  // static uint8_t dataBytes[] = {0, 0, 0, 0, 0, 0, 0, 0}; // initialize dataBytes array with 8 bytes of 0
+  static uint8_t dataBytes[] = {0, 0, 0, 0, 0, 0, 0, 0}; // initialize dataBytes array with 8 bytes of 0
 
-  /*
   // Format message
-  message.identifier = msgID;       // set message ID
-  message.extd = 0;                 // 0 = standard frame, 1 = extended frame
-  message.rtr = 0;                  // 0 = data frame, 1 = remote frame
-  message.self = CAN_SELF_MSG;      // 0 = normal transmission, 1 = self reception request 
-  message.dlc_non_comp = 0;         // non-compliant DLC (0-8 bytes)  
-  message.data_length_code = dlc;   // data length code (0-8 bytes)
-  memcpy(message.data, (const uint8_t*) msgData, dlc);  // copy data to message data field 
+  message.id             = msgID;                                      // set message ID
+  message.flags.extended = STD;                                        // 0 = standard frame, 1 = extended frame
+  message.flags.remote   = 0;                                          // 0 = data frame, 1 = remote frame
+  message.len            = dlc;                                        // data length code (0-8 bytes)
+  memcpy(message.buf, (const uint8_t*) msgData, dlc);                  // copy data to message data field 
   
   // Queue message for transmission
-  if (twai_transmit(&message, pdMS_TO_TICKS(3000)) == ESP_OK) {
-    // ESP_LOGI(TAG, "Message queued for transmission\n");
-    // Serial.printf("TX: MSG: %03x WITH %u DATA", msgID, dlc);
-
-    // printf("Message queued for transmission\n");
-    // Serial.printf("TX: MSG: %03x Data: ", msgID);
-    // for (int i = 0; i < dlc; i++) {
-    //   Serial.printf("%02x ", message.data[i]);
-    // }
-    // Serial.printf("\n");
+  if (can1.write(message)) {  // send message to bus, true = wait for empty mailbox
+    // successful write?
   } else {
-    leds[0] = CRGB::Red;
-    FastLED.show();
-    // ESP_LOGE(TAG, "Failed to queue message for transmission, initiating recovery");
-    Serial.printf("ERR: Failed to queue message for transmission, resetting controller\n");
-    twai_initiate_recovery();
-    twai_stop();
-    Serial.printf("WARN: twai Stopped\n");
-    vTaskDelay(500);
-    twai_start();
-    Serial.printf("WARN: twai Started\n");
-    // ESP_LOGI(TAG, "twai restarted\n");
-    // wifiOnConnect();
-    vTaskDelay(500);
-    leds[0] = CRGB::Black;
-    FastLED.show();
+    Serial.printf("ERR: Failed to queue message\n");
   }
-  leds[0] = CRGB::Black;
-  FastLED.show();
-  // vTaskDelay(100);
-  */
 }
 
 static void rxSwMomDur(uint8_t *data) {
@@ -258,23 +248,27 @@ static void rxSwitchMode(const uint8_t *data) {
 // send an introduction message to the bus
 // static void txIntroduction(const uint8_t* txNodeID, const uint8_t* txNodeFeatureMask, const uint_8t txMsgData, const uint16_t txmsgID, const uint8_t ptr) {
 static void txIntroduction(uint8_t* txNodeID, uint8_t* txNodeFeatureMask, uint8_t txMsgData, uint16_t txmsgID, uint8_t ptr) {
-     Serial.printf("TX: INTRO PTR %d\n", ptr);    
+  
+  if (txmsgID < 1) {
+    // Serial.printf("RX: INTRO ACK NULL\n");
+    return; // exit function if message ID is null
+  }
 
-    if (txmsgID < 1) {
-      // Serial.printf("RX: INTRO ACK NULL\n");
-      return; // exit function if message ID is null
-    }
+  Serial.printf("TX: INTRO PTR %d ", ptr);  // message pointer
+  Serial.printf("ID %02x:%02x:%02x:%02x ", txNodeID[0], txNodeID[1], txNodeID[2], txNodeID[3]); // node 
+  Serial.printf("MSG %03x\n", txmsgID); // message ID
 
-    if (ptr == 0) {
-      uint8_t dataBytes[6] = { txNodeID[0], txNodeID[1], txNodeID[2], txNodeID[3], 
-                               txNodeFeatureMask[0], txNodeFeatureMask[1] }; 
 
-      send_message(txmsgID, dataBytes, 6);
-    } else {
-      uint8_t dataBytes[5] = { txNodeID[0], txNodeID[1], txNodeID[2], txNodeID[3], txMsgData }; 
+  if (ptr == 0) {
+    uint8_t dataBytes[6] = { txNodeID[0], txNodeID[1], txNodeID[2], txNodeID[3], 
+                              txNodeFeatureMask[0], txNodeFeatureMask[1] }; 
 
-      send_message(txmsgID, dataBytes, 5);
-    }
+    send_message(txmsgID, dataBytes, 6);
+  } else {
+    uint8_t dataBytes[5] = { txNodeID[0], txNodeID[1], txNodeID[2], txNodeID[3], txMsgData }; 
+
+    send_message(txmsgID, dataBytes, 5);
+  }
 }
 
 static void nodeCheckStatus() {
@@ -323,42 +317,47 @@ static void handle_rx_message(CAN_message_t &message) {
   bool msgFlag = false;
   bool haveRXID = false; 
   int msgIDComp;
+  uint16_t msgID = message.id; // get message ID
+  uint8_t dlc = message.len; // get message data length code
+
   uint8_t rxNodeID[4] = {0, 0, 0, 0}; // node ID
 
-  /*
-
+  
   // check if message contains enough data to have node id
-  if (message.data_length_code >= 3) { 
-    memcpy((void *)rxNodeID, (const void *)message.data, 4); // copy node id from message
+  if (dlc >= 3) { 
+    memcpy((void *)rxNodeID, (const void *)message.buf, 4); // copy node id from message
+    Serial.printf("RX: MSG %03x From ID %02x:%02x:%02x:%02x\n", msgID, rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3]);
     msgIDComp = memcmp((const void *)rxNodeID, (const void *)myNodeID, 4);
     haveRXID = true; // set flag to true if message contains node id
 
     if (msgIDComp == 0) { // message is for us
       msgFlag = true; // message is for us, set flag to true
+      Serial.println("RX: Msg is for us!\n");
     }
   }
 
 
-  // if ((!msgFlag) && (message.identifier <= 0x17F)) { // switch control message but not for us
-  //   return; // exit function
-  // } 
+  if ((!msgFlag) && (msgID <= 0x17F)) { // switch control message but not for us
+    Serial.println("RX: Not for us, ignoring message\n");
+    return; // exit function
+  } 
 
-  if (message.data_length_code > 0) { // message contains data, check if it is for us
+  if (dlc > 0) { // message contains data, check if it is for us
     if (msgFlag) {
-      // Serial.printf("RX: MATCH MSG: %03x DATA: %u\n", message.identifier, message.data_length_code);
+      // Serial.printf("RX: MATCH MSG: %03x DATA: %u\n", msgID, message.data_length_code);
     } else {
-      Serial.printf("RX: NO MATCH MSG: %03x DATA: u%\n", message.identifier, message.data_length_code);
+      Serial.printf("RX: NO MATCH MSG: %03x DATA: %u\n", msgID, dlc);
     }
   } else {
     if (msgFlag) {
-      // Serial.printf("RX: MATCH MSG: %03x NO DATA\n", message.identifier);
+      // Serial.printf("RX: MATCH MSG: %03x NO DATA\n", msgID);
     } else {
-      Serial.printf("RX: NO MATCH MSG: %03x NO DATA\n", message.identifier);
+      Serial.printf("RX: NO MATCH MSG: %03x NO DATA\n", msgID);
     } 
   }
 
 
-  switch (message.identifier) {
+  switch (msgID) {
     case MSG_NORM_OPER: // normal operation message
       Serial.printf("RX: Normal Operation Message\n");
       FLAG_BEGIN_NORMAL_OPER = true; // set flag to begin normal operation
@@ -370,31 +369,31 @@ static void handle_rx_message(CAN_message_t &message) {
       FLAG_BEGIN_NORMAL_OPER = false; // clear flag to halt normal operation
       break;
     case SW_SET_OFF:            // set output switch off
-      rxSwitchState(message.data, 0);
+      rxSwitchState(message.buf, 0);
       break;
     case SW_SET_ON:             // set output switch on
-      rxSwitchState(message.data, 1);
+      rxSwitchState(message.buf, 1);
       break;
     case SW_MOM_PRESS:          // set output momentary
-      rxSwitchState(message.data, 2);
+      rxSwitchState(message.buf, 2);
       break;
     case SW_SET_MODE:           // setup output switch modes
-      rxSwitchMode(message.data);
+      rxSwitchMode(message.buf);
       break;
     case SW_SET_PWM_DUTY:          // set output switch pwm duty
-      rxPWMDuty(message.data);  
+      rxPWMDuty(message.buf);  
       break;
     case SW_SET_PWM_FREQ:          // set output switch pwm frequency
-      rxPWMFreq(message.data);
+      rxPWMFreq(message.buf);
       break;
     case SW_SET_MOM_DUR:          // set output switch momentary duration
-      rxSwMomDur(message.data);
+      rxSwMomDur(message.buf);
       break;
     case SW_SET_BLINK_DELAY:          // set output switch blink delay
-      rxSwBlinkDelay(message.data);
+      rxSwBlinkDelay(message.buf);
       break;
     case SW_SET_STROBE_PAT:          // set output switch strobe pattern
-      rxSwStrobePat(message.data);
+      rxSwStrobePat(message.buf);
       break;
     case REQ_SWITCHBOX: // request for box introduction, kicks off the introduction sequence
       if (haveRXID) { // check if REQ message contains node id
@@ -417,31 +416,8 @@ static void handle_rx_message(CAN_message_t &message) {
  
       break;
   }
-*/
 
 } // end of handle_rx_message
-
-static void TaskTWAI(void *pvParameters) {
-  // give some time at boot the cpu setup other parameters
-
-
-  // hardware acceptance filter
-  // filter 0x100:0x17f and 0x410:0x47f
-  // filter also contains DB1 of the node ID  
-  const uint16_t filterF1 = (0x100 << 5) | (myNodeID[0] >> 4);            
-  const uint16_t filterF2 = (0x400 << 5) | (myNodeID[0] & 0x0F);  
-  // const uint32_t maskF1F2 = (uint32_t) 0xF00FF00F;
-  const uint32_t maskF1F2 = (uint32_t) 0xFF00FF0;
-
-
-  // twai_filter_config_t f_config = {
-  //   .acceptance_code = (uint32_t)0x20000000, // (0x100 << 21)
-  //   .acceptance_mask = (uint32_t)0xF0000000,
-  //   .single_filter = true          // Confirm single filter mode
-  // };
-
-  
-}
 
 static void loadJSONConfig() {/* 
   Serial.println("Starting JSON Parsing...");
@@ -568,18 +544,48 @@ void recvMsg(uint8_t *data, size_t len){
 
 
 void setup() {
+  #ifdef STMNODE01
+  introMsgCnt = 4; // number of intro messages
+  introMsgPtr = 0; // start at zero
+  introMsg[0] = (uint16_t) BOX_SW_6GANG_HIGH; // intro message for 4 relay switch box
+  introMsg[1] = (uint16_t) OUT_HIGH_CURRENT_SW; // intro message for high current switch
+  introMsg[2] = (uint16_t) OUT_LOW_CURRENT_SW; // intro message for low current switch
+  introMsg[3] = (uint16_t) NODE_CPU_TEMP; // intro message for CPU temperature
+
+  
+  introMsgData[0] = 0; // send feature mask
+  introMsgData[1] = 4; // four high current switches
+  introMsgData[2] = 2; // two low current switches
+  introMsgData[3] = 1; // sensor number for CPU temperature sensor
+
+  #elif STMNODE01
+  introMsgCnt = 3; // number of intro messages
+  introMsgPtr = 0; // start at zero
+  introMsg[0] = (uint16_t) BOX_SW_4GANG; // intro message for 4 relay switch box
+  introMsg[1] = (uint16_t) OUT_HIGH_CURRENT_SW; // intro message for high current switch
+  introMsg[2] = (uint16_t) OUT_LOW_CURRENT_SW; // intro message for low current switch
+
+  introMsgData[0] = 0x00; // send feature mask
+  introMsgData[1] = 2; // two high current switches
+  introMsgData[2] = 2; // two low current switches
+  #endif
+
+
   pinMode(PC13, OUTPUT); // blue pill LED
-  Serial.begin(115200);
+  Serial.begin(512000);
   delay(5000);
 
-  Serial.begin(115200);
-  can1.begin(true); // begin CAN bus with auto retransmission
+  can1.begin(); // begin CAN bus with no auto retransmission
   can1.setBaudRate(250000);  //250KBPS
-  can1.setMBFilterProcessing( MB0, 0x17F, 0x780, STD ); // watch the three MSB of the ID (shifted << 5)
-  can1.setMBFilterProcessing( MB1, 0x47F, 0x780, STD );
+  can1.setMBFilter(ACCEPT_ALL); // accept all messages
+  can1.enableLoopBack(false); // disable loopback mode
+  can1.enableFIFO(true); // enable FIFO mode
+  
+  // can1.setMBFilterProcessing( MB0, 0x17F, 0x780, STD ); // watch the three MSB of the ID (shifted << 5)
+  // can1.setMBFilterProcessing( MB1, 0x47F, 0x780, STD );
 
-  Serial.println("CAN Bus Test");
   getmyNodeID(); // get node ID from UID
+  FLAG_SEND_INTRODUCTION = true;
 
 }
 
@@ -591,34 +597,14 @@ int lastMillis = 0;
 void loop()
 
 {
-  if (millis() - lastMillis > POLLING_RATE_MS) {
+  if ((millis() - lastMillis) > TRANSMIT_RATE_MS) {
     lastMillis = millis();
     // Serial.print(".");
     digitalWrite(PC13, digitalRead(PC13) ^ 1); // toggle LED
+    nodeCheckStatus(); // handle node status
   }
-  if (can1.read(CAN_RX_msg) ) {
-    Serial.print("Channel: ");
-    Serial.print(CAN_RX_msg.bus);
-    if (CAN_RX_msg.flags.extended == false) {
-      Serial.print(" Standard ID: 0x");
-    }
-    else {
-      Serial.print(" Extended ID: 0x");
-    }
-    Serial.print(CAN_RX_msg.id, HEX);
-
-    Serial.print(" DLC: ");
-    Serial.print(CAN_RX_msg.len);
-    if (CAN_RX_msg.flags.remote == false) {
-       Serial.print(" buf: ");
-      for(int i=0; i<CAN_RX_msg.len; i++) {
-        Serial.print("0x"); 
-        Serial.print(CAN_RX_msg.buf[i], HEX); 
-        if (i != (CAN_RX_msg.len-1))  Serial.print(" ");
-      }
-      Serial.println();
-    } else {
-       Serial.println(" Data: REMOTE REQUEST FRAME");
-    }
+  while (can1.read(CAN_RX_msg) ) {
+    // Serial.printf("RX: MSG: %03x DATA: %u\n", CAN_RX_msg.id, CAN_RX_msg.len);
+    handle_rx_message(CAN_RX_msg); // handle received message}
   }
 } // end of loop
