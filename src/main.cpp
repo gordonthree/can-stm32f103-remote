@@ -2,8 +2,6 @@
 #include <stdio.h>
 #include <IWatchdog.h>
 
-// Load FastLED
-// #include <FastLED.h>
 #include <CRC32.h>
 
 // canbus stuff
@@ -14,18 +12,12 @@ static CAN_message_t CAN_RX_msg;
 #include "canbus_flags.h"
 
 #define CAN_MY_IFACE_TYPE BOX_SW_6GANG_HIGH
-#define CAN_SELF_MSG 1
 
+// 32-bit CRC calculation library
 CRC32 crc;
 
+// setup CAN1 interface using alternate pins
 STM32_CAN can1( CAN1, ALT ); // RX_SIZE_64, TX_SIZE_16
-
-template <typename T>
-void cpArray(T from[], T to[], int len) // copies one array to another
-{
-  for (int i = 0; i < len; i++)
-    to[i] = from[i];
-}
 
 // Interval:
 uint16_t TRANSMIT_RATE_MS = 1000;
@@ -50,7 +42,6 @@ struct outputSwitch nodeSwitch[8]; // list of switches
 
 unsigned long previousMillis = 0;  // will store last time a message was send
 
-static const char *TAG = "can_control";
 static const uint8_t mySwitchCount = 6; // number of switches
 static const uint8_t* myNodeFeatureMask = FEATURE_BOX_SW_6GANG_HIGH;
 
@@ -62,15 +53,10 @@ volatile uint8_t  introMsgPtr       = 0;                         // intro messag
 volatile uint8_t  introMsgData[8]   = {0, 0, 0, 0, 0, 0, 0, 0};  // intro message data
 volatile uint8_t  introMsgCnt       = 0;                         // intro message count
 
-volatile static uint32_t UID[3];
-
-int period = 1000;
-int8_t ipCnt = 0;
-
-static volatile uint8_t myNodeID[] = {0, 0, 0, 0}; // node ID
+volatile static uint8_t myNodeID[] = {0, 0, 0, 0}; // node ID
 
 void getmyNodeID(){
-
+  uint32_t UID[3];
   // get unique hardware id from HAL
   UID[0] = HAL_GetUIDw0();
   UID[1] = HAL_GetUIDw1();
@@ -594,7 +580,7 @@ void setup() {
   can1.setBaudRate(250000);  //250KBPS
   // can1.setMBFilter(ACCEPT_ALL); // accept all messages
   // can1.enableLoopBack(false); // disable loopback mode
-  // can1.enableFIFO(true); // enable FIFO mode
+  // can1.enableFIFO(false); // enable FIFO mode
   
   can1.setMBFilterProcessing( MB0, 0x17F, 0x780, STD ); // watch the three MSB of the ID (shifted << 5)
   can1.setMBFilterProcessing( MB1, 0x47F, 0x780, STD );
