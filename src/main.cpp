@@ -60,22 +60,21 @@ volatile uint8_t  introMsgPtr       = 0;                         // intro messag
 volatile uint8_t  introMsgData[8]   = {0, 0, 0, 0, 0, 0, 0, 0};  // intro message data
 volatile uint8_t  introMsgCnt       = 0;                         // intro message count
 
+volatile static uint32_t UID[3];
+
 int period = 1000;
 int8_t ipCnt = 0;
 
 static volatile uint8_t myNodeID[] = {0, 0, 0, 0}; // node ID
 
 void getmyNodeID(){
-  // uint8_t baseMac[6];
-  // esp_err_t ret = esp_wifi_get_mac(WIFI_IF_STA, baseMac);
-  // if (ret == ESP_OK) {
-  //   /* Serial.printf("%02x:%02x:%02x:%02x:%02x:%02x\n",
-  //                 baseMac[0], baseMac[1], baseMac[2],
-  //                 baseMac[3], baseMac[4], baseMac[5]); */
-  //   myNodeID[0] = baseMac[2];
-  //   myNodeID[1] = baseMac[3];
-  //   myNodeID[2] = baseMac[4];
-  //   myNodeID[3] = baseMac[5];
+
+  UID[0] = HAL_GetUIDw0();
+  UID[1] = HAL_GetUIDw1();
+  UID[2] = HAL_GetUIDw2();
+
+  Serial.printf("UID: %08x:%08x:%08x\n", UID[0], UID[1], UID[2]);
+
   //   Serial.printf("Node ID: %02x:%02x:%02x:%02x\n", myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3]);
   // } else {
   //   Serial.println("Failed to set NODE ID");
@@ -576,30 +575,35 @@ void setup() {
   Serial.begin(115200);
   can1.begin(true); // begin CAN bus with auto retransmission
   can1.setBaudRate(250000);  //250KBPS
+  can1.setMBFilterProcessing( MB0, 0x17F, 0x780, STD ); // watch the three MSB of the ID (shifted << 5)
+  can1.setMBFilterProcessing( MB1, 0x47F, 0x780, STD );
 
   Serial.println("CAN Bus Test");
+  getmyNodeID(); // get node ID from UID
 
 }
 
 int lastPending = 0;
 uint32_t last = 0;
 int lastMillis = 0;
+
+
 void loop()
 
 {
   if (millis() - lastMillis > POLLING_RATE_MS) {
     lastMillis = millis();
-    Serial.print(".");
+    // Serial.print(".");
     digitalWrite(PC13, digitalRead(PC13) ^ 1); // toggle LED
   }
   if (can1.read(CAN_RX_msg) ) {
     Serial.print("Channel: ");
     Serial.print(CAN_RX_msg.bus);
     if (CAN_RX_msg.flags.extended == false) {
-      Serial.print(" Standard ID:");
+      Serial.print(" Standard ID: 0x");
     }
     else {
-      Serial.print(" Extended ID:");
+      Serial.print(" Extended ID: 0x");
     }
     Serial.print(CAN_RX_msg.id, HEX);
 
