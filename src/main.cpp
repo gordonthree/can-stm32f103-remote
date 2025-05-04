@@ -97,7 +97,7 @@ void getmyNodeID(){
   myNodeID[3] = myCRC & 0xFF;         // get fourth byte of CRC
 
   // show the user
-  Serial.printf("CAN Remote Node ID: %02x:%02x:%02x:%02x\n\n", myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3]);
+  Serial.printf("\nSTM32 CAN Remote\nNode ID: %02x:%02x:%02x:%02x\n\n", myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3]);
 }
 
 
@@ -337,7 +337,7 @@ static void handle_rx_message(CAN_message_t &message) {
   }
 
 
-  if ((!msgFlag) && (msgID <= 0x17F)) { // switch control message but not for us
+  if ((!msgFlag) && (msgID > 0x111)) { // switch control message but not for us
     Serial.println("RX: Not for us, ignoring message\n");
     return; // exit function
   } 
@@ -558,18 +558,33 @@ void setup() {
   introMsgData[2] = 2; // two low current switches
   introMsgData[3] = 1; // sensor number for CPU temperature sensor
 
-  #elif STMNODE01
+  #elif STMNODE02
   introMsgCnt = 3; // number of intro messages
   introMsgPtr = 0; // start at zero
   introMsg[0] = (uint16_t) BOX_SW_4GANG; // intro message for 4 relay switch box
   introMsg[1] = (uint16_t) OUT_HIGH_CURRENT_SW; // intro message for high current switch
   introMsg[2] = (uint16_t) OUT_LOW_CURRENT_SW; // intro message for low current switch
 
-  introMsgData[0] = 0x00; // send feature mask
+  introMsgData[0] = 0; // send feature mask
   introMsgData[1] = 2; // two high current switches
   introMsgData[2] = 2; // two low current switches
   #endif
 
+  // setup hardware timer to send data in 50Hz pace
+#if defined(TIM1)
+  TIM_TypeDef *Instance = TIM1;
+#else
+  TIM_TypeDef *Instance = TIM2;
+#endif
+  HardwareTimer *SendTimer = new HardwareTimer(Instance);
+  SendTimer->setOverflow(1, HERTZ_FORMAT); // 50 Hz
+#if ( STM32_CORE_VERSION_MAJOR < 2 )
+  SendTimer->attachInterrupt(1, SendData);
+  SendTimer->setMode(1, TIMER_OUTPUT_COMPARE);
+#else //2.0 forward
+  SendTimer->attachInterrupt(nodeCheckStatus);
+#endif
+  SendTimer->resume();
 
   pinMode(PC13, OUTPUT); // blue pill LED
   Serial.begin(512000);
@@ -577,12 +592,12 @@ void setup() {
 
   can1.begin(); // begin CAN bus with no auto retransmission
   can1.setBaudRate(250000);  //250KBPS
-  can1.setMBFilter(ACCEPT_ALL); // accept all messages
-  can1.enableLoopBack(false); // disable loopback mode
-  can1.enableFIFO(true); // enable FIFO mode
+  // can1.setMBFilter(ACCEPT_ALL); // accept all messages
+  // can1.enableLoopBack(false); // disable loopback mode
+  // can1.enableFIFO(true); // enable FIFO mode
   
-  // can1.setMBFilterProcessing( MB0, 0x17F, 0x780, STD ); // watch the three MSB of the ID (shifted << 5)
-  // can1.setMBFilterProcessing( MB1, 0x47F, 0x780, STD );
+  can1.setMBFilterProcessing( MB0, 0x17F, 0x780, STD ); // watch the three MSB of the ID (shifted << 5)
+  can1.setMBFilterProcessing( MB1, 0x47F, 0x780, STD );
 
   getmyNodeID(); // get node ID from UID
   FLAG_SEND_INTRODUCTION = true;
@@ -601,7 +616,7 @@ void loop()
     lastMillis = millis();
     // Serial.print(".");
     digitalWrite(PC13, digitalRead(PC13) ^ 1); // toggle LED
-    nodeCheckStatus(); // handle node status
+    // nodeCheckStatus(); // handle node status
   }
   while (can1.read(CAN_RX_msg) ) {
     // Serial.printf("RX: MSG: %03x DATA: %u\n", CAN_RX_msg.id, CAN_RX_msg.len);
