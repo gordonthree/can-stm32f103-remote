@@ -570,23 +570,23 @@ void setup() {
 #else //2.0 forward
   SendTimer->attachInterrupt(nodeCheckStatus);
 #endif
-  SendTimer->resume();
 
-  pinMode(PC13, OUTPUT); // blue pill LED
-  Serial.begin(512000);
-  delay(5000);
+pinMode(PC13, OUTPUT); // blue pill LED
+Serial.begin(256000);
+delay(5000);
 
-  can1.begin(); // begin CAN bus with no auto retransmission
-  can1.setBaudRate(250000);  //250KBPS
-  // can1.setMBFilter(ACCEPT_ALL); // accept all messages
-  // can1.enableLoopBack(false); // disable loopback mode
-  // can1.enableFIFO(false); // enable FIFO mode
-  
-  can1.setMBFilterProcessing( MB0, 0x17F, 0x780, STD ); // watch the three MSB of the ID (shifted << 5)
-  can1.setMBFilterProcessing( MB1, 0x47F, 0x780, STD );
+can1.begin(); // begin CAN bus with no auto retransmission
+can1.setBaudRate(250000);  //250KBPS
+// can1.setMBFilter(ACCEPT_ALL); // accept all messages
+// can1.enableLoopBack(false); // disable loopback mode
+// can1.enableFIFO(false); // enable FIFO mode
 
-  getmyNodeID(); // get node ID from UID
-  FLAG_SEND_INTRODUCTION = true;
+can1.setMBFilterProcessing( MB0, 0x17F, 0x780, STD ); // watch the three MSB of the ID (shifted << 5)
+can1.setMBFilterProcessing( MB1, 0x47F, 0x780, STD );
+
+getmyNodeID(); // get node ID from UID
+FLAG_SEND_INTRODUCTION = true;
+SendTimer->resume();
 
 }
 
