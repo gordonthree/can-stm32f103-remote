@@ -1,49 +1,105 @@
 #include <Arduino.h>
 #include <stdio.h>
+
+#ifdef STMNODE01
 #include <IWatchdog.h>
-
-#include <CRC32.h>
-
+#include <stm32yyxx_ll_adc.h>
 // canbus stuff
 #include <STM32_CAN.h>
 static CAN_message_t CAN_RX_msg;
 
-#include "canbus_msg.h"
-#include "canbus_flags.h"
+// setup CAN1 interface using alternate pins
+STM32_CAN can1( CAN1, ALT ); // RX_SIZE_64, TX_SIZE_16
 
-#define CAN_MY_IFACE_TYPE BOX_SW_6GANG_HIGH
+#elif TEENSY01
+#include <Metro.h>
+#include <FlexCAN.h>
 
+Metro sysTimer = Metro(1);// milliseconds
+
+FlexCAN teensycan1(250000, 0);
+static CAN_message_t CAN_RX_msg;
+#endif
+
+#include <CRC32.h>
+
+
+
+// my canbus stuff
+#include <canbus_project.h>
+
+
+// STM32 internal temp sensor stuff
+/* Values available in datasheet */
+#if defined(STM32C0xx)
+#define CALX_TEMP 30
+#else
+#define CALX_TEMP 25
+#endif
+
+#if defined(STM32C0xx)
+#define VTEMP      760
+#define AVG_SLOPE 2530
+#define VREFINT   1212
+#elif defined(STM32F1xx)
+#define VTEMP     1430
+#define AVG_SLOPE 4300
+#define VREFINT   1200
+#elif defined(STM32F2xx) || defined(STM32F4xx)
+#define VTEMP      760
+#define AVG_SLOPE 2500
+#define VREFINT   1210
+#endif
+
+#ifdef STMNODE01 // TODO how do we automate this?
+#define LED_BUILTIN PC13
+#define LED_ON      0
+#define LED_OFF     1
+
+#define CAN_MY_IFACE_TYPE BOX_MULTI_IO
+static const uint8_t mySwitchCount = 0; // no switches
+static const uint8_t mySensorCount = 3; // got sensors
+
+static const uint8_t* myNodeFeatureMask = FEATURE_BOX_SW_6GANG_HIGH;
+#elif TEENSY01
+#define LED_BUILTIN 13
+#define LED_ON      0
+#define LED_OFF     1
+
+#define CAN_MY_IFACE_TYPE BOX_MULTI_IO
+static const uint8_t mySwitchCount = 0; // no switches
+static const uint8_t mySensorCount = 3; // got sensors
+
+static const uint8_t* myNodeFeatureMask = FEATURE_BOX_SW_6GANG_HIGH;
+
+
+#endif
+
+/* Analog read resolution */
+#define LL_ADC_RESOLUTION LL_ADC_RESOLUTION_12B
+#define ADC_RANGE 4096
+
+float Temperature, V_Sense, V_Ref;
+char TxBuffer[30];
+uint16_t AD_RES[2];
+#ifdef STMNODE01
+ADC_HandleTypeDef hadc1;
+#endif
 // 32-bit CRC calculation library
 CRC32 crc;
 
-// setup CAN1 interface using alternate pins
-STM32_CAN can1( CAN1, ALT ); // RX_SIZE_64, TX_SIZE_16
 
 // Interval:
 uint16_t TRANSMIT_RATE_MS = 1000;
 #define POLLING_RATE_MS 500
 
 
-struct outputSwitch {
-  uint8_t  swState = 0;          // switch state on, off, momentary
-  uint8_t  swMode  = 0;          // switch mode 0 toggle, 1 momentary, 2 blinking, 3 strobe, 4 pwm, 5 disabled
-  uint8_t  swType  = 0;          // mosfet, relay, sink
-  uint8_t  featuresMask[2];    // feature mask
-  uint16_t pwmDuty = 20;       // pwm duty cycle
-  uint16_t pwmFreq = 1000;     // pwm frequency
-  uint16_t blinkDelay = 5000;  // blink delay in ms
-  uint16_t momPressDur = 500;  // momentary press duration in ms
-  uint8_t  strobePat = 1;      // strobe pattern
-  uint8_t  stateMemory = 1;    // state memory
-  time_t   lastSeen = 0;       // last time seen
-};
+
 
 struct outputSwitch nodeSwitch[8]; // list of switches
+struct outputSensor nodeSensor[8]; // list of sensors
 
 unsigned long previousMillis = 0;  // will store last time a message was send
-
-static const uint8_t mySwitchCount = 6; // number of switches
-static const uint8_t* myNodeFeatureMask = FEATURE_BOX_SW_6GANG_HIGH;
 
 volatile uint8_t nodeSwitchState[8] = {0, 0, 0, 0, 0, 0, 0, 0};  // switch state
 volatile uint8_t nodeSwitchMode[8]  = {0, 0, 0, 0, 0, 0, 0, 0};  // switch mode
@@ -57,11 +113,13 @@ volatile static uint8_t myNodeID[] = {0, 0, 0, 0}; // node ID
 
 void getmyNodeID(){
   uint32_t UID[3];
+
+  #ifdef STMNODE01
   // get unique hardware id from HAL
   UID[0] = HAL_GetUIDw0();
   UID[1] = HAL_GetUIDw1();
   UID[2] = HAL_GetUIDw2();
-
+  #endif
   // show the user
   // Serial.printf("UID: %08x:%08x:%08x\n", UID[0], UID[1], UID[2]);
 
@@ -86,6 +144,65 @@ void getmyNodeID(){
   Serial.printf("\nSTM32 CAN Remote\nNode ID: %02x:%02x:%02x:%02x\n\n", myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3]);
 }
 
+// convert byte array into 32-bit integer
+static uint32_t unchunk32(const uint8_t* dataBytes){
+  static uint32_t result = ((dataBytes[0]<<24) | (dataBytes[1]<<16) | (dataBytes[2]<<8) | (dataBytes[3]));
+
+  return result;
+}
+// convert a 32-bit number into a 4 byte array
+char* chunk32(const uint32_t inVal = 0) {
+  static char tempStr[4] = {(inVal >> 24) && 0xFF, (inVal >> 16) && 0xFF, (inVal >>  8) && 0xFF, inVal && 0xFF};
+  return tempStr;
+}
+
+#ifndef TEENSY01
+static int32_t readVref() {
+#ifdef STM32U0xx
+  /* On some devices Internal voltage reference calibration value not programmed
+     during production and return 0xFFFF. See errata sheet. */
+  if ((uint32_t)(*VREFINT_CAL_ADDR) == 0xFFFF) {
+    return 3300U;
+  }
+#endif
+#ifdef __LL_ADC_CALC_VREFANALOG_VOLTAGE
+#ifdef STM32U5xx
+  return (__LL_ADC_CALC_VREFANALOG_VOLTAGE(ADC1, analogRead(AVREF), LL_ADC_RESOLUTION));
+#else
+  return (__LL_ADC_CALC_VREFANALOG_VOLTAGE(analogRead(AVREF), LL_ADC_RESOLUTION));
+#endif
+#else
+  return (VREFINT * ADC_RANGE / analogRead(AVREF)); // ADC sample to mV
+#endif
+}
+#endif
+
+#ifdef ATEMP
+static int32_t readTempSensor(int32_t VRef) {
+#ifdef __LL_ADC_CALC_TEMPERATURE
+#ifdef STM32U5xx
+  return (__LL_ADC_CALC_TEMPERATURE(ADC1, VRef, analogRead(ATEMP), LL_ADC_RESOLUTION));
+#else
+  return (__LL_ADC_CALC_TEMPERATURE(VRef, analogRead(ATEMP), LL_ADC_RESOLUTION));
+#endif
+#elif defined(__LL_ADC_CALC_TEMPERATURE_TYP_PARAMS)
+  return (__LL_ADC_CALC_TEMPERATURE_TYP_PARAMS(AVG_SLOPE, VTEMP, CALX_TEMP, VRef, analogRead(ATEMP), LL_ADC_RESOLUTION));
+#else
+  return 0;
+#endif
+}
+#endif
+
+#ifndef TEENSY01
+static int32_t readVoltage(int32_t VRef, uint32_t pin)
+{
+#ifdef STM32U5xx
+  return (__LL_ADC_CALC_DATA_TO_VOLTAGE(ADC1, VRef, analogRead(pin), LL_ADC_RESOLUTION));
+#else
+  return (__LL_ADC_CALC_DATA_TO_VOLTAGE(VRef, analogRead(pin), LL_ADC_RESOLUTION));
+#endif
+}
+#endif
 
 // print list of switches and their attributes to the web console
 static void dumpSwitches() {
@@ -118,21 +235,40 @@ static void dumpSwitches() {
 
 static void send_message(const uint16_t msgID, const uint8_t *msgData, const uint8_t dlc) {
   CAN_message_t message;
-  static uint8_t dataBytes[] = {0, 0, 0, 0, 0, 0, 0, 0}; // initialize dataBytes array with 8 bytes of 0
+  // static uint8_t dataBytes[] = {0, 0, 0, 0, 0, 0, 0, 0}; // initialize dataBytes array with 8 bytes of 0
 
+  digitalWrite(LED_BUILTIN, LED_ON);
+
+  #ifdef STMNODE01
   // Format message
   message.id             = msgID;                                      // set message ID
   message.flags.extended = STD;                                        // 0 = standard frame, 1 = extended frame
   message.flags.remote   = 0;                                          // 0 = data frame, 1 = remote frame
   message.len            = dlc;                                        // data length code (0-8 bytes)
-  memcpy(message.buf, (const uint8_t*) msgData, dlc);                  // copy data to message data field 
+  #elif TEENSY01
+  // Format message
+  message.id             = msgID;                                      // set message ID
+  message.len            = dlc;                                        // data length code (0-8 bytes)
+  #endif
   
+  memcpy(message.buf, (const uint8_t*) msgData, dlc);                  // copy data to message data field 
+
+  #ifdef STMNODE01
   // Queue message for transmission
   if (can1.write(message)) {  // send message to bus, true = wait for empty mailbox
     // successful write?
+  #elif TEENSY01
+  // Queue message for transmission
+  if (teensycan1.write(message)) {  // send message to bus, true = wait for empty mailbox
+    // successful write?
+
+  #endif
   } else {
     Serial.printf("ERR: Failed to queue message\n");
   }
+
+  digitalWrite(LED_BUILTIN, LED_OFF);
+
 }
 
 static void rxSwMomDur(uint8_t *data) {
@@ -175,7 +311,7 @@ static void rxSwitchState(const uint8_t *data, const uint8_t swState) {
   // static uint8_t unitID[] = {data[0], data[1], data[2], data[3]}; // unit ID
   uint8_t dataBytes[] = {myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3], switchID}; // send my own node ID, along with the switch number
 
-  Serial.printf("RX: Set Switch %d State %d\n", switchID, swState);
+  // Serial.printf("RX: Set Switch %d State %d\n", switchID, swState);
   // nodeSwitchState[switchID] = swState; // update switch buffer
   nodeSwitch[switchID].swState = swState; // update switch buffer
   // nodeSwitch[switchID].lastSeen = getEpoch(); // update last seen time
@@ -296,6 +432,23 @@ static void nodeCheckStatus() {
         break;
     }
   }
+
+  for (uint8_t sensorID = 0; sensorID < MAX_SENSOR_CNT; sensorID++) { // loop through sensors 
+    if (nodeSensor[sensorID].present) {                               // only send data for sensors that are present
+      uint16_t privMsg = nodeSensor[sensorID].sensorMsg;          
+      if (privMsg != 0) {                                             // use private channel assigned to send the data
+        char buf[CAN_MAX_DLC] = {0};          
+        sprintf(buf, "%d", nodeSensor[sensorID].i32Value);            // convert signed integer to string
+        send_message(privMsg, (uint8_t*) buf, CAN_MAX_DLC);           // send message with ID assigned by controller
+      } else {
+        char buf[CAN_MAX_DLC] = {0};
+        strcat(buf, (char*)myNodeID);                                  // copy my node id to the buffer first
+        strcat(buf, (char*)chunk32(nodeSensor[sensorID].i32Value));    // now copy the sensor data
+
+
+      }
+    }
+  }
  
 }
 
@@ -303,45 +456,28 @@ static void handle_rx_message(CAN_message_t &message) {
   bool msgFlag = false;
   bool haveRXID = false; 
   int msgIDComp;
-  uint16_t msgID = message.id; // get message ID
-  uint8_t dlc = message.len; // get message data length code
+  uint16_t msgID = message.id;
+  uint8_t rxNodeID[NODE_ID_SIZE] = {0, 0, 0, 0}; // node ID
 
-  uint8_t rxNodeID[4] = {0, 0, 0, 0}; // node ID
+  digitalWrite(LED_BUILTIN, LED_ON);
 
-  
+ 
+  // WebSerial.printf("RX: MSG: %03x DATA: %u\n", message.id, message.len);
+
   // check if message contains enough data to have node id
-  if (dlc >= 3) { 
+  if (message.len >= NODE_ID_SIZE) { 
     memcpy((void *)rxNodeID, (const void *)message.buf, 4); // copy node id from message
-    Serial.printf("RX: MSG %03x From ID %02x:%02x:%02x:%02x\n", msgID, rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3]);
     msgIDComp = memcmp((const void *)rxNodeID, (const void *)myNodeID, 4);
     haveRXID = true; // set flag to true if message contains node id
 
     if (msgIDComp == 0) { // message is for us
       msgFlag = true; // message is for us, set flag to true
-      Serial.println("RX: Msg is for us!\n");
     }
   }
 
-
-  if ((!msgFlag) && (msgID > 0x111)) { // switch control message but not for us
-    Serial.println("RX: Not for us, ignoring message\n");
-    return; // exit function
-  } 
-
-  if (dlc > 0) { // message contains data, check if it is for us
-    if (msgFlag) {
-      // Serial.printf("RX: MATCH MSG: %03x DATA: %u\n", msgID, message.data_length_code);
-    } else {
-      Serial.printf("RX: NO MATCH MSG: %03x DATA: %u\n", msgID, dlc);
-    }
-  } else {
-    if (msgFlag) {
-      // Serial.printf("RX: MATCH MSG: %03x NO DATA\n", msgID);
-    } else {
-      Serial.printf("RX: NO MATCH MSG: %03x NO DATA\n", msgID);
-    } 
-  }
-
+  // if ((!msgFlag) && (message.id <= 0x17F)) { // switch control message but not for us
+  //   return; // exit function
+  // } 
 
   switch (msgID) {
     case MSG_NORM_OPER: // normal operation message
@@ -381,14 +517,17 @@ static void handle_rx_message(CAN_message_t &message) {
     case SW_SET_STROBE_PAT:          // set output switch strobe pattern
       rxSwStrobePat(message.buf);
       break;
-    case REQ_SWITCHBOX: // request for box introduction, kicks off the introduction sequence
+
+
+    case REQ_NODE_INTRO: // request for box introduction, kicks off the introduction sequence
       if (haveRXID) { // check if REQ message contains node id
-        Serial.printf("RX: REQ BOX Responding to %02x:%02x:%02x:%02x\n", rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3]);
+        // Serial.printf("RX: REQ NODE responding to %02x:%02x:%02x:%02x\n", rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3]);
         introMsgPtr = 0; // reset intro message pointer
         FLAG_SEND_INTRODUCTION = true; // set flag to send introduction message
       }
       break;
-    case ACK_SWITCHBOX:
+
+    case ACK_INTRO:
       if (msgFlag) { // message was sent to our ID
         if (introMsgPtr < introMsgCnt) {
           Serial.printf("RX: INTRO ACK %d\n", introMsgPtr);  
@@ -398,13 +537,39 @@ static void handle_rx_message(CAN_message_t &message) {
       }
       break;
     
-    default:
- 
+
+      default:
+        if (msgID == DATA_EPOCH) {
+          uint8_t epochBytes[4] = {message.buf[0], message.buf[1], message.buf[2], message.buf[3]};
+          uint32_t rxTime = 0;
+          rxTime = unchunk32(epochBytes);
+    
+          Serial.printf("RX: EPOCH TIME %u\n", rxTime);
+        }
+
+        if (message.len > 0) { // message contains data, check if it is for us
+          if (msgFlag) {
+            // Serial.printf("RX: MATCH MSG: %03x DATA: %u\n", message.id, message.len);
+          } else {
+            Serial.printf("RX: NO MATCH MSG: %03x DATA: u%\n", message.id, message.len);
+          }
+        } else {
+          if (msgFlag) {
+            // Serial.printf("RX: MATCH MSG: %03x NO DATA\n", message.id);
+          } else {
+            Serial.printf("RX: NO MATCH MSG: %03x NO DATA\n", message.id);
+          } 
+        }
+      
+      
       break;
   }
-
+  
+  digitalWrite(LED_BUILTIN, LED_OFF);
+  
 } // end of handle_rx_message
 
+  
 static void loadJSONConfig() {/* 
   Serial.println("Starting JSON Parsing...");
 
@@ -530,19 +695,32 @@ void recvMsg(uint8_t *data, size_t len){
 
 
 void setup() {
-  #ifdef STMNODE01
+  #ifdef STMNODE01 // TODO how do we automate this?
+
+  nodeSensor[0].present    = true;
+  nodeSensor[0].sensorType = NODE_INT_VOLTAGE_SENSOR;
+  nodeSensor[0].sensorMsg  = DATA_INTERNAL_PCB_VOLTS;
+  nodeSensor[0].dataSize   = DATA_SIZE_16BITS;
+  nodeSensor[1].present    = true;
+  nodeSensor[1].sensorType = NODE_CPU_TEMP;
+  nodeSensor[1].sensorMsg  = DATA_NODE_CPU_TEMP;
+  nodeSensor[1].dataSize   = DATA_SIZE_16BITS;
+  nodeSensor[2].present    = true;
+  nodeSensor[2].sensorType = BUTTON_ANALOG_KNOB;
+  nodeSensor[2].sensorMsg  = SENSOR_RESERVED_72C;
+  nodeSensor[2].dataSize   = DATA_SIZE_16BITS;
+
   introMsgCnt = 4; // number of intro messages
   introMsgPtr = 0; // start at zero
-  introMsg[0] = (uint16_t) BOX_SW_6GANG_HIGH; // intro message for 4 relay switch box
-  introMsg[1] = (uint16_t) OUT_HIGH_CURRENT_SW; // intro message for high current switch
-  introMsg[2] = (uint16_t) OUT_LOW_CURRENT_SW; // intro message for low current switch
-  introMsg[3] = (uint16_t) NODE_CPU_TEMP; // intro message for CPU temperature
-
+  introMsg[0] = (uint16_t) BOX_MULTI_IO; // generic multi io box
+  introMsg[1] = nodeSensor[0].sensorType; // intro message for high current switch
+  introMsg[2] = nodeSensor[1].sensorType; // intro message for low current switch
+  introMsg[3] = nodeSensor[2].sensorType; // intro message for CPU temperature
   
   introMsgData[0] = 0; // send feature mask
-  introMsgData[1] = 4; // four high current switches
-  introMsgData[2] = 2; // two low current switches
-  introMsgData[3] = 1; // sensor number for CPU temperature sensor
+  introMsgData[1] = 1; // one of these
+  introMsgData[2] = 1; // one of these
+  introMsgData[3] = 1; // and one of these
 
   #elif STMNODE02
   introMsgCnt = 3; // number of intro messages
@@ -556,6 +734,7 @@ void setup() {
   introMsgData[2] = 2; // two low current switches
   #endif
 
+#ifndef TEENSY01
   // setup hardware timer to send data in 50Hz pace
 #if defined(TIM1)
   TIM_TypeDef *Instance = TIM1;
@@ -570,42 +749,66 @@ void setup() {
 #else //2.0 forward
   SendTimer->attachInterrupt(nodeCheckStatus);
 #endif
+#endif
 
-pinMode(PC13, OUTPUT); // blue pill LED
-Serial.begin(256000);
-delay(5000);
+  analogReadResolution(12);
 
-can1.begin(); // begin CAN bus with no auto retransmission
-can1.setBaudRate(250000);  //250KBPS
-// can1.setMBFilter(ACCEPT_ALL); // accept all messages
-// can1.enableLoopBack(false); // disable loopback mode
-// can1.enableFIFO(false); // enable FIFO mode
+  pinMode(LED_BUILTIN, OUTPUT); // blue pill LED
+  Serial.begin(256000);
+  delay(5000);
+  #ifdef STMNODE01
+  can1.begin(); // begin CAN bus with no auto retransmission
+  can1.setBaudRate(250000);  //250KBPS
+  // can1.setMBFilter(ACCEPT_ALL); // accept all messages
+  // can1.enableLoopBack(false); // disable loopback mode
+  // can1.enableFIFO(false); // enable FIFO mode
 
-can1.setMBFilterProcessing( MB0, 0x17F, 0x780, STD ); // watch the three MSB of the ID (shifted << 5)
-can1.setMBFilterProcessing( MB1, 0x47F, 0x780, STD );
+  can1.setMBFilterProcessing( MB0, MSG_CTRL_SWITCHES, 0x780, STD ); // 0x780 watch the four MSB of the ID 
+  can1.setMBFilterProcessing( MB1, MSG_REQ_INTRO, 0x780, STD );
 
-getmyNodeID(); // get node ID from UID
-FLAG_SEND_INTRODUCTION = true;
-SendTimer->resume();
+  getmyNodeID(); // get node ID from UID
+  FLAG_SEND_INTRODUCTION = true;
+  SendTimer->resume();
+  #elif TEENSY01
+  teensycan1.begin();
+  CAN_filter_t myFilter = {.id = (MSG_CTRL_IFACE<<21) | (MASK_CTRL_IFACE <<5)};
+  
 
-}
+  //teensycan1.setFilter()
+  #endif
+
+
+} // end setup
 
 int lastPending = 0;
 uint32_t last = 0;
 int lastMillis = 0;
 
 
-void loop()
+void loop() {
 
-{
+
   if ((millis() - lastMillis) > TRANSMIT_RATE_MS) {
     lastMillis = millis();
     // Serial.print(".");
-    digitalWrite(PC13, digitalRead(PC13) ^ 1); // toggle LED
-    // nodeCheckStatus(); // handle node status
+    // digitalToggle(LED_BUILTIN); // toggle LED
+    
+    nodeCheckStatus(); // handle node status
+    
+    #ifdef STMNODE01
+    // Print out the value read
+    int32_t VRef = readVref();                       // get the voltage reference value
+    nodeSensor[0].i32Value = VRef;                   // store vref reading
+    nodeSensor[1].i32Value = readTempSensor(VRef);   // store cpu temp reading
+    nodeSensor[2].i32Value = readVoltage(VRef, A0);  // store value of analog 0
+    #endif
   }
+
+  #ifdef STMNODE01
   while (can1.read(CAN_RX_msg) ) {
     // Serial.printf("RX: MSG: %03x DATA: %u\n", CAN_RX_msg.id, CAN_RX_msg.len);
     handle_rx_message(CAN_RX_msg); // handle received message}
   }
+  #endif
+
 } // end of loop
