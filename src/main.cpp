@@ -28,6 +28,8 @@ static CAN_message_t CAN_RX_msg;
 // my canbus stuff
 #include <canbus_project.h>
 
+volatile uint8_t nodeIdArrSize      = 0;
+volatile uint8_t featureMaskArrSize = 0;
 
 // STM32 internal temp sensor stuff
 /* Values available in datasheet */
@@ -52,7 +54,6 @@ static CAN_message_t CAN_RX_msg;
 #endif
 
 #ifdef STMNODE01 // TODO how do we automate this?
-#define LED_BUILTIN PC13
 #define LED_ON      0
 #define LED_OFF     1
 
@@ -94,22 +95,9 @@ uint16_t TRANSMIT_RATE_MS = 1000;
 #define POLLING_RATE_MS 500
 
 
-
-
-struct outputSwitch nodeSwitch[8]; // list of switches
-struct outputSensor nodeSensor[8]; // list of sensors
+struct canNodeInfo nodeInfo;       // information on this node
 
 unsigned long previousMillis = 0;  // will store last time a message was send
-
-volatile uint8_t nodeSwitchState[8] = {0, 0, 0, 0, 0, 0, 0, 0};  // switch state
-volatile uint8_t nodeSwitchMode[8]  = {0, 0, 0, 0, 0, 0, 0, 0};  // switch mode
-
-volatile uint16_t introMsg[8]       = {0, 0, 0, 0, 0, 0, 0, 0};  // intro messages  
-volatile uint8_t  introMsgPtr       = 0;                         // intro message pointer
-volatile uint8_t  introMsgData[8]   = {0, 0, 0, 0, 0, 0, 0, 0};  // intro message data
-volatile uint8_t  introMsgCnt       = 0;                         // intro message count
-
-volatile static uint8_t myNodeID[] = {0, 0, 0, 0}; // node ID
 
 void getmyNodeID(){
   uint32_t UID[3];
@@ -135,13 +123,13 @@ void getmyNodeID(){
   int myCRC = crc.calc();
 
   // transfer those four bytes to myNodeID array
-  myNodeID[0] = (myCRC >> 24) & 0xFF; // get first byte of CRC
-  myNodeID[1] = (myCRC >> 16) & 0xFF; // get second byte of CRC
-  myNodeID[2] = (myCRC >> 8) & 0xFF;  // get third byte of CRC
-  myNodeID[3] = myCRC & 0xFF;         // get fourth byte of CRC
+  nodeInfo.nodeID[0] = (myCRC >> 24) & 0xFF; // get first byte of CRC
+  nodeInfo.nodeID[1] = (myCRC >> 16) & 0xFF; // get second byte of CRC
+  nodeInfo.nodeID[2] = (myCRC >> 8) & 0xFF;  // get third byte of CRC
+  nodeInfo.nodeID[3] = myCRC & 0xFF;         // get fourth byte of CRC
 
   // show the user
-  Serial.printf("\nSTM32 CAN Remote\nNode ID: %02x:%02x:%02x:%02x\n\n", myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3]);
+  Serial.printf("\nSTM32 CAN Remote\nNode ID: %02x:%02x:%02x:%02x\n\n", nodeInfo.nodeID[0], nodeInfo.nodeID[1], nodeInfo.nodeID[2], nodeInfo.nodeID[3]);
 }
 
 // convert byte array into 32-bit integer
@@ -204,31 +192,43 @@ static int32_t readVoltage(int32_t VRef, uint32_t pin)
 }
 #endif
 
-// print list of switches and their attributes to the web console
-static void dumpSwitches() {
+/**
+ * @brief Print a list of outputs (switches) and their attributes a console
+ * 
+ * @param nodeID (optional) On a control node, print outputs for a specific node 4-bytes uint8_t
+**/
+static void dumpSwitches(uint8_t* nodeID[NODE_ID_SIZE]=NULL) {
   Serial.println("\n\n--------------------------------------------------------------------------\n");
 
-  Serial.println("Switches:\n\n");
-  for (int i = 0; i < mySwitchCount; i++) {
-    Serial.printf("Switch %d: Last Update: %d\n", i, nodeSwitch[i].lastSeen);
-      
-    Serial.printf("State %d, Mode %d, Type %d, Feature Mask %02x:%02x\n",  
-      nodeSwitch[i].swState,
-      nodeSwitch[i].swMode,
-      nodeSwitch[i].swType,
-      nodeSwitch[i].featuresMask[0],
-      nodeSwitch[i].featuresMask[1]);
-      
-    Serial.printf("pwmDuty %d, pwmFreq %d, blinkDelay %d, momPressDur %d, strobePat %d\n\n",
-      nodeSwitch[i].pwmDuty,
-      nodeSwitch[i].pwmFreq,
-      nodeSwitch[i].blinkDelay,
-      nodeSwitch[i].momPressDur,
-      nodeSwitch[i].strobePat);
-      
-      delay(5);
+  if (nodeID != NULL) {
+    Serial.println("Node output modules:\n\n");
+    // TODO needs more code
+  } else {
+    Serial.printf("Node %02x:%02x:%02x:%02x output modules:\n\n\n", nodeID[0], nodeID[1], nodeID[2], nodeID[3]);
+
+    for (int i = 0; i < NODE_MOD_MAX_CNT; i++) {
+      if ((nodeInfo.subModules->modType >= MODULE_OUTPUTS) &&           // print info for outputs that have been defined and
+          (nodeInfo.subModules->modType <= (MODULE_OUTPUTS | 0x0F))) {  // are in the proper message id range
+
+        Serial.printf("Switch %d: Last Update: %d\n", i, nodeInfo.subModules[i].timestamp);
+          
+        Serial.printf("State %d, Mode %d, Type %d, Feature Mask %02x:%02x\n",  
+          nodeInfo.subModules[i].u8Value,
+          nodeInfo.subModules[i].outMode,
+          nodeInfo.subModules[i].modType,
+          nodeInfo.subModules[i].featuresMask[0],
+          nodeInfo.subModules[i].featuresMask[1]);
+          
+        Serial.printf("pwmDuty %d, pwmFreq %d, blinkDelay %d, momPressDur %d, strobePat %d\n\n",
+          nodeInfo.subModules[i].pwmDuty,
+          nodeInfo.subModules[i].pwmFreq,
+          nodeInfo.subModules[i].blinkDelay,
+          nodeInfo.subModules[i].momPressDur,
+          nodeInfo.subModules[i].strobePat);
+      }
+    }
   }
-  Serial.println("\n\nEnd of Switches\n");
+  Serial.println("\n\nEnd of Outputs Report\n");
   Serial.println("--------------------------------------------------------------------------\n\n");
 
 }
@@ -275,45 +275,45 @@ static void rxSwMomDur(uint8_t *data) {
   static uint8_t switchID = data[4]; // switch ID 
   static uint16_t swDuration = (data[5] << 8) | data[6]; // duration in ms
   
-  nodeSwitch[switchID].momPressDur = swDuration; // update momentary press duration
+  nodeInfo.subModules[switchID].momPressDur = swDuration; // update momentary press duration
 }
 
 static void rxSwBlinkDelay(uint8_t *data) {
   static uint8_t switchID = data[4]; // switch ID 
   static uint16_t swBlinkDelay = (data[5] << 8) | data[6]; // delay in ms 
 
-  nodeSwitch[switchID].blinkDelay = swBlinkDelay; // update blink delay
+  nodeInfo.subModules[switchID].blinkDelay = swBlinkDelay; // update blink delay
 }
 
 static void rxSwStrobePat(uint8_t *data) {
   static uint8_t switchID = data[4]; // switch ID 
   static uint8_t swStrobePat = data[5]; // strobe pattern
 
-  nodeSwitch[switchID].strobePat = swStrobePat; // update strobe pattern
+  nodeInfo.subModules[switchID].strobePat = swStrobePat; // update strobe pattern
 }
 
 static void rxPWMDuty(uint8_t *data) {
   static uint8_t switchID = data[4]; // switch ID 
   static uint16_t PWMDuty = (data[5] << 8) | data[6]; // pwm duty cycle
 
-  nodeSwitch[switchID].pwmDuty = PWMDuty; // update pwm duty cycle
+  nodeInfo.subModules[switchID].pwmDuty = PWMDuty; // update pwm duty cycle
 }
 
 static void rxPWMFreq(uint8_t *data) {
   static uint8_t switchID = data[4]; // switch ID 
   static uint16_t PWMFreq = (data[5] << 8) | data[6]; // pwm frequency 
 
-  nodeSwitch[switchID].pwmFreq = PWMFreq; // update pwm frequency
+  nodeInfo.subModules[switchID].pwmFreq = PWMFreq; // update pwm frequency
 }
 
 static void rxSwitchState(const uint8_t *data, const uint8_t swState) {
   uint8_t switchID = data[4]; // switch ID 
   // static uint8_t unitID[] = {data[0], data[1], data[2], data[3]}; // unit ID
-  uint8_t dataBytes[] = {myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3], switchID}; // send my own node ID, along with the switch number
+  uint8_t dataBytes[] = {nodeInfo.nodeID[0], nodeInfo.nodeID[1], nodeInfo.nodeID[2], nodeInfo.nodeID[3], switchID}; // send my own node ID, along with the switch number
 
   // Serial.printf("RX: Set Switch %d State %d\n", switchID, swState);
   // nodeSwitchState[switchID] = swState; // update switch buffer
-  nodeSwitch[switchID].swState = swState; // update switch buffer
+  nodeInfo.subModules[switchID].u8Value = swState; // update switch buffer
   // nodeSwitch[switchID].lastSeen = getEpoch(); // update last seen time
   
 
@@ -339,12 +339,12 @@ static void rxSwitchMode(const uint8_t *data) {
   uint8_t switchID = data[4]; // switch ID 
   uint8_t switchMode = data[5]; // switch mode
 
-  uint8_t dataBytes[] = {myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3], switchID, switchMode}; // send my own node ID, along with the switch number
+  uint8_t dataBytes[] = {nodeInfo.nodeID[0], nodeInfo.nodeID[1], nodeInfo.nodeID[2], nodeInfo.nodeID[3], switchID, switchMode}; // send my own node ID, along with the switch number
 
   Serial.printf("RX: Set Switch %d Mode %d\n", switchID, switchMode);
   // send_message(DATA_OUTPUT_SWITCH_MODE, dataBytes, sizeof(dataBytes));    
   // nodeSwitchMode[switchID] = switchMode; // update switch mode
-  nodeSwitch[switchID].swMode = switchMode; // update switch mode
+  nodeInfo.subModules[switchID].u8Value = switchMode; // update switch mode
   // nodeSwitch[switchID].lastSeen = getEpoch(); // update last seen time
 
 
@@ -367,21 +367,63 @@ static void rxSwitchMode(const uint8_t *data) {
   }
 }
 
+/**
+ * @brief Concatenate arrays to build a data packet for sending with a CAN message.
+ *        All parameters are required.
+ * 
+ * @param arr1 uint8_t* Typically containing the 4-byte node id we are sending from or to.
+ * @param n1 uint8_t The size of the elements contained in arr1.
+ * @param arr2 uint8_t* Typically containing four more bytes to send along with the node id.
+ * @param n2 uint8_t The size of the elements contained in arr2.
+ * 
+ * @returns uint8_t* Array containing the merged contents of arr1 and arr2.
+ * 
+ */
+uint8_t* messageBuilder(uint8_t arr1[], uint8_t n1, uint8_t arr2[], uint8_t n2) {
+  uint8_t *buf = (u_int8_t*)malloc(sizeof(uint8_t) * n1 * n2);
+
+  memcpy(buf, arr1, n1 * sizeof(uint8_t)); // copy the first array to the buffer
+
+  memcpy(buf + n1, arr2, n2 * sizeof(uint8_t)); // copy the second array to the buffer
+
+  return buf; // that's all folks return complete array
+}
+
 // send an introduction message to the bus
 // static void txIntroduction(const uint8_t* txNodeID, const uint8_t* txNodeFeatureMask, const uint_8t txMsgData, const uint16_t txmsgID, const uint8_t ptr) {
-static void txIntroduction(uint8_t* txNodeID, uint8_t* txNodeFeatureMask, uint8_t txMsgData, uint16_t txmsgID, uint8_t ptr) {
-  
-  if (txmsgID < 1) {
-    // Serial.printf("RX: INTRO ACK NULL\n");
-    return; // exit function if message ID is null
+/**
+ * @brief Introduce this node and modules to the entire net
+ * 
+ * @param ptr optional pointer for where we are in the introductions. leave blank to only send the node intro message
+ */
+static void txIntroduction(int ptr = -1) {
+  0;
+
+  if ( ptr <= 0) {  // step one introduce the node itself, then move onto modules
+    uint16_t txMsgID = nodeInfo.nodeType;
+    Serial.printf("TX: NODE INTRO PTR %i MSG: %03x\n", ptr, txMsgID);  // tell the user some things
+    // uint8_t n1 = sizeof(nodeInfo.nodeID) / sizeof(nodeInfo.nodeID[0]);
+    // uint8_t n2 = sizeof(nodeInfo.featureMask) / sizeof(nodeInfo.featureMask[0]);
+
+    uint8_t* dataBytes = messageBuilder(nodeInfo.nodeID, nodeIdArrSize, nodeInfo.featureMask, featureMaskArrSize);
+
+    send_message(nodeInfo.nodeType, dataBytes, sizeof(dataBytes));  // send this data to the tx queue
   }
-
-  Serial.printf("TX: INTRO PTR %d ", ptr);  // message pointer
-  Serial.printf("ID %02x:%02x:%02x:%02x ", txNodeID[0], txNodeID[1], txNodeID[2], txNodeID[3]); // node 
-  Serial.printf("MSG %03x\n", txmsgID); // message ID
+  
 
 
-  if (ptr == 0) {
+  if (ptr > 0) {                                              // remaining steps
+    uint8_t modPtr = (ptr - 1);
+    uint16_t txMsgID = nodeInfo.subModules[modPtr].modType;  // retrieve module type, reduce pointer by 1 so we start at beginning of submodules
+
+    if (txMsgID > 0) {                                        // make sure a module is defined
+      uint16_t txMsgID = nodeInfo.subModules[modPtr].modType;
+      
+      if (nodeInfo.subModules[modPtr].sendFeatureMask) {     // this module requires the feature mask to be sent with the introduction
+        uint8_t* dataBytes = messageBuilder(nodeInfo.nodeID, nodeIdArrSize, nodeInfo.subModules[ptr].featureMask, featureMaskArrSize);
+        send_message(txMsgID, dataBytes, sizeof(dataBytes));  // send this data to the tx queue
+      }
+    }
     uint8_t dataBytes[6] = { txNodeID[0], txNodeID[1], txNodeID[2], txNodeID[3], 
                               txNodeFeatureMask[0], txNodeFeatureMask[1] }; 
 
@@ -396,7 +438,7 @@ static void txIntroduction(uint8_t* txNodeID, uint8_t* txNodeFeatureMask, uint8_
 static void nodeCheckStatus() {
   if (FLAG_SEND_INTRODUCTION) {
     // send introduction message to all nodes
-    txIntroduction((uint8_t*)myNodeID, (uint8_t*)myNodeFeatureMask, introMsgData[introMsgPtr], introMsg[introMsgPtr], introMsgPtr);
+    txIntroduction((uint8_t*)nodeInfo.nodeID, (uint8_t*)nodeInfo.featureMask, introMsgData[introMsgPtr], introMsg[introMsgPtr], introMsgPtr);
     Serial.printf("TX: INTRO MSG %d OF %d\n", introMsgPtr, introMsgCnt);
 
     if (introMsgPtr >= introMsgCnt) {
@@ -733,6 +775,11 @@ void setup() {
   introMsgData[1] = 2; // two high current switches
   introMsgData[2] = 2; // two low current switches
   #endif
+
+  // these should be constants, but volatile works instead
+  nodeIdArrSize      = sizeof(nodeInfo.nodeID) / sizeof(nodeInfo.nodeID[0]);
+  featureMaskArrSize = sizeof(nodeInfo.featureMask) / sizeof(nodeInfo.featureMask[0]);
+
 
 #ifndef TEENSY01
   // setup hardware timer to send data in 50Hz pace
