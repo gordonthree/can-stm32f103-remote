@@ -120,6 +120,9 @@ unsigned long previousMillis = 0;  // will store last time a message was send
 uint8_t* getNodeID(){
   uint32_t UID[3];
   uint8_t *buf = (uint8_t*)malloc(sizeof(uint8_t) * NODE_ID_SIZE);  /** Create a buffer to store the array until it is returned. */
+  if (buf == NULL) {
+    return NULL;
+  }
 
   #ifdef STMNODE01
   // get unique hardware id from HAL
@@ -387,7 +390,7 @@ static void txIntroduction(int ptr = -1) {
 
   if ( ptr <= 0) {  /**  Step one introduce the node itself, then move onto modules below. */
     uint16_t txMsgID = nodeInfo.nodeType;
-    CONSOLE.printf("TX: NODE TYPE %03x INTRO PTR %i\n", txMsgID, ptr );  /** Tell the user some things. */
+    CONSOLE.printf("TX: NODE INTRO TYPE %03x PTR %i\n", txMsgID, ptr );  /** Tell the user some things. */
     uint8_t* dataBytes = messageBuilder(nodeInfo.nodeID, nodeIdArrSize, nodeInfo.featureMask, featureMaskArrSize);
 
     send_message(nodeInfo.nodeType, dataBytes, sizeof(dataBytes));  // send this data to the tx queue
@@ -398,13 +401,14 @@ static void txIntroduction(int ptr = -1) {
     uint16_t txMsgID = nodeInfo.subModules[modPtr].modType;                     /** Retrieve module type. */
 
     if (txMsgID > 0) {                                                          /** Only proceed if the module is defined. */
-      CONSOLE.printf("TX: MODULE TYPE %03x INTRO PTR %i\n", txMsgID, modPtr);    /** Tell the user some things. */
+      CONSOLE.printf("TX: MODULE INTRO TYPE %03x PTR %i\n", txMsgID, modPtr);    /** Tell the user some things. */
       if (nodeInfo.subModules[modPtr].sendFeatureMask) {                        /**  This module requires the feature mask to be sent with the introduction. */
         uint8_t* dataBytes = messageBuilder(nodeInfo.nodeID, nodeIdArrSize, nodeInfo.subModules[ptr].featureMask, featureMaskArrSize);
         send_message(txMsgID, dataBytes, sizeof(dataBytes));                    /** Send this data to the tx queue. */
       } else {                                                                  /** No feature mask is available, send a module count. */
         uint8_t txFeatureMask[] = {nodeInfo.subModules[ptr].modCount, 0};       /** Create a basic feature mask with the count for this module type. */
         uint8_t* dataBytes = messageBuilder(nodeInfo.nodeID, nodeIdArrSize, txFeatureMask, featureMaskArrSize);
+        send_message(txMsgID, dataBytes, sizeof(dataBytes));                    /** Send this data to the tx queue. */
       }
     }
   }
