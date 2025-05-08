@@ -458,7 +458,9 @@ static void nodeCheckStatus() {
     return; // normal operation not started, exit function
   }
 
-  for (uint8_t switchID = 0; switchID < mySwitchCount; switchID++) {
+  for (int i = 0; i < NODE_MOD_MAX_CNT; i++) {
+    if ((nodeInfo.subModules->modType >= MODULE_OUTPUTS) &&           /** TX info on modules that have been defined. */
+        (nodeInfo.subModules->modType <= (MODULE_OUTPUTS | 0x0F))) {  /** are in the proper message id range */
     uint8_t swState = nodeInfo.subModules[switchID].u8Value; // get switch state
     uint8_t swMode = nodeInfo.subModules[switchID].outMode; // get switch mode
     uint8_t stateData[] = {nodeInfo.nodeID[0], nodeInfo.nodeID[1], nodeInfo.nodeID[2], nodeInfo.nodeID[3], switchID}; // send my own node ID, along with the switch number
