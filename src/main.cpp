@@ -355,9 +355,9 @@ static void rxPWMFreq(uint8_t *data) {
  * @param data The received message data
  * @param outputState The output state value from the message data, default is 0xff
  */
-static void rxOutputState(const uint8_t outputID, const uint8_t outputState = 0xff) {
+static void rxOutputState(const uint8_t outputID, const uint8_t outputState = OUT_STATE_INVALID) {
   nodeInfo.subModules[outputID].u8Value = outputState; /** update switch state in nodeInfo */
-  nodeInfo.subModules[outputID].timestamp = getEpochTime(); /** update timestamp in nodeInfo */
+  nodeInfo.subModules[outputID].timestamp = getEpoch(); /** update timestamp in nodeInfo */
   
   /** TODO: implement output state handling */
   switch (outputState) {
@@ -394,12 +394,12 @@ static void rxOutputState(const uint8_t outputID, const uint8_t outputState = 0x
  *             - data[5] represents the output mode.
  */
 
-static void rxOutputMode(const uint8_t *data) {
-  uint8_t outputID   = data[4]; /** output ID */
-  uint8_t outputMode = data[5]; /** output mode */
+static void rxOutputMode(const uint8_t outputID, const uint8_t outputMode = OUT_MODE_INVALID) {
+  // uint8_t outputID   = data[4]; /** output ID */
+  // uint8_t outputMode = data[5]; /** output mode */
 
-  nodeInfo.subModules[outputID].u8Value = switchMode; /** update output mode in nodeInfo */
-  nodeInfo.subModules[switchID].timestamp = getEpochTime(); /** update timestamp */
+  nodeInfo.subModules[outputID].u8Value = outputMode; /** update output mode in nodeInfo */
+  nodeInfo.subModules[outputID].timestamp = getEpoch(); /** update timestamp */
 
 
   /** TODO: implement mode handling */
@@ -575,16 +575,6 @@ static void handle_rx_message(CAN_message_t &message) {
     case SW_SET_STROBE_PAT:          // set output switch strobe pattern
       rxSwStrobePat(message.buf);
       break;
-    case DATA_EPOCH: /** received time of day info from controller, set our onboard RTC */
-      uint8_t epochBytes[4] = {message.buf[0], message.buf[1], message.buf[2], message.buf[3]};
-      uint32_t rxTime = 0;
-      rxTime = unchunk32(epochBytes);
-      
-      if (rtc) rtc.setEpoch(rxTime); /** set onboard RTC */
-
-
-      break;
-
     case REQ_NODE_INTRO: // request for box introduction, kicks off the introduction sequence
       if (haveRXID) { // check if REQ message contains node id
         // CONSOLE.printf("RX: REQ NODE responding to %02x:%02x:%02x:%02x\n", rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3]);
@@ -602,24 +592,29 @@ static void handle_rx_message(CAN_message_t &message) {
         }
       }
       break;
-    
 
-      default: /** handle other messages here */
-        if (message.len > 0) { // message contains data, check if it is for us
-          if (msgFlag) {
-            // CONSOLE.printf("RX: MATCH MSG: %03x DATA: %u\n", message.id, message.len);
-          } else {
-            CONSOLE.printf("RX: NO MATCH MSG: %03x DATA: u%\n", message.id, message.len);
-          }
+    default: /** handle other messages here */
+      if (msgID == DATA_EPOCH) { /** received time of day info from controller, set our onboard RTC */
+
+        uint8_t epochBytes[] = {message.buf[0], message.buf[1], message.buf[2], message.buf[3]};
+        uint32_t rxTime = unchunk32(epochBytes);
+        
+        rtc.setEpoch(rxTime); /** set onboard RTC */
+      }
+
+      if (message.len > 0) { // message contains data, check if it is for us
+        if (msgFlag) {
+          // CONSOLE.printf("RX: MATCH MSG: %03x DATA: %u\n", message.id, message.len);
         } else {
-          if (msgFlag) {
-            // CONSOLE.printf("RX: MATCH MSG: %03x NO DATA\n", message.id);
-          } else {
-            CONSOLE.printf("RX: NO MATCH MSG: %03x NO DATA\n", message.id);
-          } 
+          CONSOLE.printf("RX: NO MATCH MSG: %03x DATA: u%\n", message.id, message.len);
         }
-      
-      
+      } else {
+        if (msgFlag) {
+          // CONSOLE.printf("RX: MATCH MSG: %03x NO DATA\n", message.id);
+        } else {
+          CONSOLE.printf("RX: NO MATCH MSG: %03x NO DATA\n", message.id);
+        } 
+      }
       break;
   }
   
