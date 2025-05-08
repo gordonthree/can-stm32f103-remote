@@ -2,6 +2,8 @@
 #include <stdio.h>
 
 #ifdef STMNODE01
+#include <STM32RTC.h>
+
 #include <IWatchdog.h>
 #include <stm32yyxx_ll_adc.h>
 // canbus stuff
@@ -12,6 +14,10 @@ static CAN_message_t CAN_RX_msg;
 STM32_CAN can1( CAN1, ALT ); // RX_SIZE_64, TX_SIZE_16
 
 #define CONSOLE Serial       /** Create an alias for the Serial peripheral.  */
+
+/* Get the rtc object */
+STM32RTC& rtc = STM32RTC::getInstance();
+
 #elif TEENSY01
 #include <Metro.h>
 #include <FlexCAN.h>
@@ -22,6 +28,7 @@ FlexCAN teensycan1(250000, 0);
 static CAN_message_t CAN_RX_msg;
 
 #define CONSOLE Serial       /** Create an alias for the Serial peripheral, */
+
 
 #elif
 #define CONSOLE Serial       /** Create an alias for the Serial peripheral. */
@@ -63,15 +70,10 @@ volatile uint8_t introMsgPtr        = 0;
 #define VREFINT   1210
 #endif
 
-#ifdef STMNODE01 // TODO how do we automate this?
+#ifdef STM32 
 #define LED_ON      0
 #define LED_OFF     1
 
-#define CAN_MY_IFACE_TYPE BOX_MULTI_IO
-static const uint8_t mySwitchCount = 0; // no switches
-static const uint8_t mySensorCount = 3; // got sensors
-
-static const uint8_t* myNodeFeatureMask = FEATURE_BOX_SW_6GANG_HIGH;
 #elif TEENSY01
 #define LED_BUILTIN 13
 #define LED_ON      0
@@ -93,9 +95,10 @@ static const uint8_t* myNodeFeatureMask = FEATURE_BOX_SW_6GANG_HIGH;
 float Temperature, V_Sense, V_Ref;
 char TxBuffer[30];
 uint16_t AD_RES[2];
-#ifdef STMNODE01
+#ifdef STM32
 ADC_HandleTypeDef hadc1;
 #endif
+
 // 32-bit CRC calculation library
 CRC32 crc;
 
@@ -193,15 +196,44 @@ static int32_t readTempSensor(int32_t VRef) {
 #endif
 
 #ifndef TEENSY01
+/**
+ * @brief Reads the voltage from a specified analog pin.
+ * 
+ * @param VRef The reference voltage in millivolts.
+ * @param pin The pin number from which to read the analog voltage.
+ * 
+ * @return int32_t The calculated voltage in millivolts.
+ */
 static int32_t readVoltage(int32_t VRef, uint32_t pin)
 {
 #ifdef STM32U5xx
+  // Calculate voltage using STM32U5xx specific function
   return (__LL_ADC_CALC_DATA_TO_VOLTAGE(ADC1, VRef, analogRead(pin), LL_ADC_RESOLUTION));
 #else
+  // Calculate voltage using general function
   return (__LL_ADC_CALC_DATA_TO_VOLTAGE(VRef, analogRead(pin), LL_ADC_RESOLUTION));
 #endif
 }
 #endif
+
+/**
+ * @brief Return the current epoch in seconds.
+ * 
+ * @details This function returns the current epoch in seconds since 1970-01-01 00:00:00 UTC.
+ * 
+ * @return uint32_t The current epoch in seconds.
+ */
+static uint32_t getEpoch() {
+  #ifdef STM32
+  // Get the current epoch from the internal RTC
+  uint32_t epoch = rtc.getEpoch();
+  #else
+  // If this is not an STM32, return 0
+  uint32_t epoch = 0;
+  #endif
+
+  return epoch;
+}
 
 /**
  * @brief Print a list of outputs (switches) and their attributes a console
@@ -317,49 +349,61 @@ static void rxPWMFreq(uint8_t *data) {
   nodeInfo.subModules[switchID].pwmFreq = PWMFreq; // update pwm frequency
 }
 
-static void rxSwitchState(const uint8_t *data, const uint8_t swState) {
-  uint8_t switchID = data[4]; // switch ID 
-  // static uint8_t unitID[] = {data[0], data[1], data[2], data[3]}; // unit ID
-  uint8_t dataBytes[] = {nodeInfo.nodeID[0], nodeInfo.nodeID[1], nodeInfo.nodeID[2], nodeInfo.nodeID[3], switchID}; // send my own node ID, along with the switch number
-
-  // CONSOLE.printf("RX: Set Switch %d State %d\n", switchID, swState);
-  // nodeSwitchState[switchID] = swState; // update switch buffer
-  nodeInfo.subModules[switchID].u8Value = swState; // update switch buffer
-  // nodeSwitch[switchID].lastSeen = getEpoch(); // update last seen time
+/**
+ * @brief Handles the reception of an output state command and updates the attributes in the nodeInfo.
+ *
+ * @param data The received message data
+ * @param outputState The output state value from the message data, default is 0xff
+ */
+static void rxOutputState(const uint8_t outputID, const uint8_t outputState = 0xff) {
+  nodeInfo.subModules[outputID].u8Value = outputState; /** update switch state in nodeInfo */
+  nodeInfo.subModules[outputID].timestamp = getEpochTime(); /** update timestamp in nodeInfo */
   
-
-  switch (swState) {
-    case 0: // switch off
-      // send_message(DATA_OUTPUT_SWITCH_OFF, dataBytes, sizeof(dataBytes));
+  /** TODO: implement output state handling */
+  switch (outputState) {
+    case OUT_STATE_DISABLED:      /** disabled output, ignore control commands */
       break;
-    case 1: // switch on
-      // send_message(DATA_OUTPUT_SWITCH_ON, dataBytes, sizeof(dataBytes));
+    case OUT_STATE_OFF:           /** output is off */
       break;
-    case 2: // momentary press
-      // send_message(DATA_OUTPUT_SWITCH_MOM_PUSH , dataBytes, sizeof(dataBytes));
-      // send_message(DATA_OUTPUT_SWITCH_ON, dataBytes, sizeof(dataBytes));
-      // send_message(DATA_OUTPUT_SWITCH_OFF, dataBytes, sizeof(dataBytes));
+    case OUT_STATE_ON:            /** output is on */
       break;
-    default:
-      CONSOLE.println("Invalid switch state");
+    case OUT_STATE_MOMENTARY:     /** output momentary press command */
+      break;
+    case OUT_STATE_BLINKING:      /** output is blinking */
+      break;
+    case OUT_STATE_STROBE:        /** output is strobing */
+      break; 
+    case OUT_STATE_PWM:           /** output is pwm */
+      break;
+    default:                      /** invalid output state */
+      // CONSOLE.println("Invalid output state");
       break;
   }
 }
 
-static void rxSwitchMode(const uint8_t *data) {
-  uint8_t switchID = data[4]; // switch ID 
-  uint8_t switchMode = data[5]; // switch mode
+/**
+ * @brief Handles the reception of an output mode command and updates the attributes in the nodeInfo.
+ * 
+ * This function processes the incoming data to set the mode of a specified output 
+ * on the node. It updates the output mode in the subModules structure and records 
+ * the current time as a timestamp. The function also includes a switch-case statement 
+ * for implementing specific mode handling based on the mode received.
+ * 
+ * @param data A pointer to an array containing the message data, where:
+ *             - data[4] represents the output ID.
+ *             - data[5] represents the output mode.
+ */
 
-  uint8_t dataBytes[] = {nodeInfo.nodeID[0], nodeInfo.nodeID[1], nodeInfo.nodeID[2], nodeInfo.nodeID[3], switchID, switchMode}; // send my own node ID, along with the switch number
+static void rxOutputMode(const uint8_t *data) {
+  uint8_t outputID   = data[4]; /** output ID */
+  uint8_t outputMode = data[5]; /** output mode */
 
-  CONSOLE.printf("RX: Set Switch %d Mode %d\n", switchID, switchMode);
-  // send_message(DATA_OUTPUT_SWITCH_MODE, dataBytes, sizeof(dataBytes));    
-  // nodeSwitchMode[switchID] = switchMode; // update switch mode
-  nodeInfo.subModules[switchID].u8Value = switchMode; // update switch mode
-  // nodeSwitch[switchID].lastSeen = getEpoch(); // update last seen time
+  nodeInfo.subModules[outputID].u8Value = switchMode; /** update output mode in nodeInfo */
+  nodeInfo.subModules[switchID].timestamp = getEpochTime(); /** update timestamp */
 
 
-  switch (switchMode) {
+  /** TODO: implement mode handling */
+  switch (outputMode) {
     case OUT_MODE_ALWAYS_OFF: /** Output control disabled and output is always off */
       break;  
     case OUT_MODE_ALWAYS_ON:  /** Output control disabled and output is always on */
@@ -375,7 +419,7 @@ static void rxSwitchMode(const uint8_t *data) {
     case OUT_MODE_PWM:        /** Output uses a PWM signal */
       break;
     default:                  /** Invalid output mode */
-      // CONSOLE.println("Invalid switch mode");
+      // CONSOLE.println("Invalid output mode");
       break;
   }
 }
@@ -505,16 +549,16 @@ static void handle_rx_message(CAN_message_t &message) {
       FLAG_BEGIN_NORMAL_OPER = false; // clear flag to halt normal operation
       break;
     case SW_SET_OFF:            // set output switch off
-      rxSwitchState(message.buf, 0);
+      rxOutputState(message.buf[4], OUT_STATE_OFF);
       break;
     case SW_SET_ON:             // set output switch on
-      rxSwitchState(message.buf, 1);
+      rxOutputState(message.buf[4], OUT_STATE_ON);
       break;
     case SW_MOM_PRESS:          // set output momentary
-      rxSwitchState(message.buf, 2);
+      rxOutputState(message.buf[4], OUT_STATE_MOMENTARY);
       break;
     case SW_SET_MODE:           // setup output switch modes
-      rxSwitchMode(message.buf);
+      rxOutputMode(message.buf[4], message.buf[5]);
       break;
     case SW_SET_PWM_DUTY:          // set output switch pwm duty
       rxPWMDuty(message.buf);  
@@ -535,6 +579,9 @@ static void handle_rx_message(CAN_message_t &message) {
       uint8_t epochBytes[4] = {message.buf[0], message.buf[1], message.buf[2], message.buf[3]};
       uint32_t rxTime = 0;
       rxTime = unchunk32(epochBytes);
+      
+      if (rtc) rtc.setEpoch(rxTime); /** set onboard RTC */
+
 
       break;
 
@@ -558,10 +605,6 @@ static void handle_rx_message(CAN_message_t &message) {
     
 
       default: /** handle other messages here */
-        if (msgID == DATA_EPOCH) {
-
-        }
-
         if (message.len > 0) { // message contains data, check if it is for us
           if (msgFlag) {
             // CONSOLE.printf("RX: MATCH MSG: %03x DATA: %u\n", message.id, message.len);
@@ -743,6 +786,8 @@ void setup() {
   introMsgCnt = nodeInfo.subModCnt + 1; /** number of intro messages */
   introMsgPtr = 0; // start at zero
     
+  rtc.begin(); // initialize RTC 24H format
+
   #elif STMNODE02
   nodeInfo.nodeType  = BOX_SW_4GANG;
   nodeInfo.subModCnt = 2;
