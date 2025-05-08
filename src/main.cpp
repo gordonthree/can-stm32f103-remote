@@ -360,20 +360,22 @@ static void rxSwitchMode(const uint8_t *data) {
 
 
   switch (switchMode) {
-    case 0: // solid state (on/off)
+    case OUT_MODE_ALWAYS_OFF: /** Output control disabled and output is always off */
       break;  
-    case 1: // one-shot momentary
+    case OUT_MODE_ALWAYS_ON:  /** Output control disabled and output is always on */
       break;
-    case 2: // blinking
+    case OUT_MODE_TOGGLE:     /** Output acts like an on/off toggle switch */
       break;
-    case 3: // strobing
+    case OUT_MODE_MOMENTARY:  /** Output acts like a momentary push switch */
       break;
-    case 4: // pwm
+    case OUT_MODE_BLINKING:   /** Output blinks on and off like a turn signal */
       break;
-    case 5: // disabled
+    case OUT_MODE_STROBE:     /** Output strobes various timing patterns */
       break;
-    default:
-      CONSOLE.println("Invalid switch mode");
+    case OUT_MODE_PWM:        /** Output uses a PWM signal */
+      break;
+    default:                  /** Invalid output mode */
+      // CONSOLE.println("Invalid switch mode");
       break;
   }
 }
@@ -439,7 +441,7 @@ static void nodeCheckStatus() {
       uint8_t modeData[]  = {nodeInfo.nodeID[0], nodeInfo.nodeID[1], nodeInfo.nodeID[2], nodeInfo.nodeID[3], i, swMode};  // send my node ID, along with the switch number
       uint8_t stateData[] = {nodeInfo.nodeID[0], nodeInfo.nodeID[1], nodeInfo.nodeID[2], nodeInfo.nodeID[3], i, swState}; // send my node ID, along with the switch number
         
-      send_message(DATA_OUTPUT_SWITCH_MODE, modeData, sizeof(modeData));  /** send output mode data */
+      send_message(DATA_OUTPUT_SWITCH_MODE,  modeData,  sizeof(modeData));  /** send output mode data */
       send_message(DATA_OUTPUT_SWITCH_STATE, stateData, sizeof(stateData)); /** send output state data */
     } else
     
@@ -529,7 +531,12 @@ static void handle_rx_message(CAN_message_t &message) {
     case SW_SET_STROBE_PAT:          // set output switch strobe pattern
       rxSwStrobePat(message.buf);
       break;
+    case DATA_EPOCH: /** received time of day info from controller, set our onboard RTC */
+      uint8_t epochBytes[4] = {message.buf[0], message.buf[1], message.buf[2], message.buf[3]};
+      uint32_t rxTime = 0;
+      rxTime = unchunk32(epochBytes);
 
+      break;
 
     case REQ_NODE_INTRO: // request for box introduction, kicks off the introduction sequence
       if (haveRXID) { // check if REQ message contains node id
@@ -550,13 +557,9 @@ static void handle_rx_message(CAN_message_t &message) {
       break;
     
 
-      default:
+      default: /** handle other messages here */
         if (msgID == DATA_EPOCH) {
-          uint8_t epochBytes[4] = {message.buf[0], message.buf[1], message.buf[2], message.buf[3]};
-          uint32_t rxTime = 0;
-          rxTime = unchunk32(epochBytes);
-    
-          CONSOLE.printf("RX: EPOCH TIME %u\n", rxTime);
+
         }
 
         if (message.len > 0) { // message contains data, check if it is for us
