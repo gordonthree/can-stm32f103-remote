@@ -31,9 +31,10 @@ static CAN_message_t CAN_RX_msg;
 #include <CRC32.h>
 
 
-
 // my canbus stuff
-#include <canbus_project.h>
+#include <canbus_project.h>      /** Include canbus project header file. */
+using namespace ByteConversion;  /** Include byte conversion functions. */
+
 
 volatile uint8_t nodeIdArrSize      = 0;
 volatile uint8_t featureMaskArrSize = 0;
@@ -150,17 +151,7 @@ uint8_t* getNodeID(){
   Serial.printf("\nSTM32 CAN Remote\nNode ID: %02x:%02x:%02x:%02x\n\n", nodeInfo.nodeID[0], nodeInfo.nodeID[1], nodeInfo.nodeID[2], nodeInfo.nodeID[3]);
 }
 
-// convert byte array into 32-bit integer
-static uint32_t unchunk32(const uint8_t* dataBytes){
-  static uint32_t result = ((dataBytes[0]<<24) | (dataBytes[1]<<16) | (dataBytes[2]<<8) | (dataBytes[3]));
 
-  return result;
-}
-// convert a 32-bit number into a 4 byte array
-char* chunk32(const uint32_t inVal = 0) {
-  static char tempStr[4] = {(inVal >> 24) && 0xFF, (inVal >> 16) && 0xFF, (inVal >>  8) && 0xFF, inVal && 0xFF};
-  return tempStr;
-}
 
 #ifndef TEENSY01
 static int32_t readVref() {
@@ -385,28 +376,6 @@ static void rxSwitchMode(const uint8_t *data) {
   }
 }
 
-/**
- * @brief Concatenate arrays to build a data packet for sending with a CAN message.
- *        All parameters are required.
- * 
- * @param arr1 uint8_t* Typically containing the 4-byte node id we are sending from or to.
- * @param n1 uint8_t The size of the elements contained in arr1. 
- * @usage example: uint8_t n1 = sizeof(arr1) / sizeof(arr1[0]);
- * @param arr2 uint8_t* Typically containing four more bytes to send along with the node id.
- * @param n2 uint8_t The size of the elements contained in arr2.
- * 
- * @returns uint8_t* Array containing the merged contents of arr1 and arr2.
- * 
- */
-uint8_t* messageBuilder(uint8_t arr1[], uint8_t n1, uint8_t arr2[], uint8_t n2) {
-  uint8_t *buf = (u_int8_t*)malloc(sizeof(uint8_t) * n1 * n2);
-
-  memcpy(buf, arr1, n1 * sizeof(uint8_t)); // copy the first array to the buffer
-
-  memcpy(buf + n1, arr2, n2 * sizeof(uint8_t)); // copy the second array to the buffer
-
-  return buf; // that's all folks return complete array
-}
 
 // send an introduction message to the bus
 // static void txIntroduction(const uint8_t* txNodeID, const uint8_t* txNodeFeatureMask, const uint_8t txMsgData, const uint16_t txmsgID, const uint8_t ptr) {
@@ -458,50 +427,39 @@ static void nodeCheckStatus() {
     return; // normal operation not started, exit function
   }
 
-  for (int i = 0; i < NODE_MOD_MAX_CNT; i++) {
-    if ((nodeInfo.subModules->modType >= MODULE_OUTPUTS) &&           /** TX info on modules that have been defined. */
-        (nodeInfo.subModules->modType <= (MODULE_OUTPUTS | 0x0F))) {  /** are in the proper message id range */
-    uint8_t swState = nodeInfo.subModules[switchID].u8Value; // get switch state
-    uint8_t swMode = nodeInfo.subModules[switchID].outMode; // get switch mode
-    uint8_t stateData[] = {nodeInfo.nodeID[0], nodeInfo.nodeID[1], nodeInfo.nodeID[2], nodeInfo.nodeID[3], switchID}; // send my own node ID, along with the switch number
-    uint8_t modeData[] = {nodeInfo.nodeID[0], nodeInfo.nodeID[1], nodeInfo.nodeID[2], nodeInfo.nodeID[3], switchID, swMode}; // send my own node ID, along with the switch number
-      
-    // send_message(DATA_OUTPUT_SWITCH_MODE, modeData, sizeof(modeData));  
-    // Serial.printf("TX: DATA: Switch %d State %d Mode %d\n", switchID, swState, swMode);
-
-    switch (swState) {
-      case OUT_MODE_ALWAYS_OFF: /** output control disabled and always off */
-        // send_message(DATA_OUTPUT_SWITCH_OFF, stateData, sizeof(stateData));
-        break;
-      case OUT_MODE_ALWAYS_ON: /** output control disabled and always on */
-        send_message(DATA_OUTPUT_SWITCH_ON, stateData, sizeof(stateData));
-        break;
-      case OUT_MODE_TOGGLE: /** output acts like a toggle switch off/on */
-        send_message(DATA_OUTPUT_SWITCH_MOM_PUSH, stateData, sizeof(stateData));
-        break;
-      default:
-        break;
-    }
-  }
-
-  for (uint8_t sensorID = 0; sensorID < MAX_SENSOR_CNT; sensorID++) { // loop through sensors 
-    if (nodeSensor[sensorID].present) {                               // only send data for sensors that are present
-      uint16_t privMsg = nodeSensor[sensorID].sensorMsg;          
-      if (privMsg != 0) {                                             // use private channel assigned to send the data
-        char buf[CAN_MAX_DLC] = {0};          
-        sprintf(buf, "%d", nodeSensor[sensorID].i32Value);            // convert signed integer to string
-        send_message(privMsg, (uint8_t*) buf, CAN_MAX_DLC);           // send message with ID assigned by controller
-      } else {
-        char buf[CAN_MAX_DLC] = {0};
-        strcat(buf, (char*)myNodeID);                                  // copy my node id to the buffer first
-        strcat(buf, (char*)chunk32(nodeSensor[sensorID].i32Value));    // now copy the sensor data
-
-
-      }
-    }
-  }
+  for (int i = 0; i < NODE_MOD_MAX_CNT; i++) {                        /** Step through the submodules. */
+    /** lets do outputs first */
+    if ((nodeInfo.subModules[i].modType >= MODULE_OUTPUTS) &&              /** Print info for outputs that have been defined and */
+        (nodeInfo.subModules[i].modType <= (MODULE_OUTPUTS | 0x0F))) {     /** are in the proper message id range. */
+      uint8_t swState     = nodeInfo.subModules[i].u8Value;  /**  get output state */
+      uint8_t swMode      = nodeInfo.subModules[i].outMode;  /**  get output mode */
+      uint8_t modeData[]  = {nodeInfo.nodeID[0], nodeInfo.nodeID[1], nodeInfo.nodeID[2], nodeInfo.nodeID[3], i, swMode};  // send my node ID, along with the switch number
+      uint8_t stateData[] = {nodeInfo.nodeID[0], nodeInfo.nodeID[1], nodeInfo.nodeID[2], nodeInfo.nodeID[3], i, swState}; // send my node ID, along with the switch number
+        
+      send_message(DATA_OUTPUT_SWITCH_MODE, modeData, sizeof(modeData));  /** send output mode data */
+      send_message(DATA_OUTPUT_SWITCH_STATE, stateData, sizeof(stateData)); /** send output state data */
+    } else
+    
+    /** now lets do sensors1 and sensors2 */
+    if ((nodeInfo.subModules[i].modType >= MODULE_SENSORS1) &&                          /** Print info for sensors that have been defined and */
+        (nodeInfo.subModules[i].modType <= (MODULE_SENSORS1 | 0x0F)) ||                 /** are in the proper message id range. */
+        (nodeInfo.subModules[i].modType >= MODULE_SENSORS2) &&                          
+        (nodeInfo.subModules[i].modType <= (MODULE_SENSORS2 | 0x0F))) {                 
+          bool privMsg     = nodeInfo.subModules[i].privMsg;                            /** check if sensor uses private channel to send data */
+          uint16_t privMsg = nodeInfo.subModules[i].txMsgID;                            /** get message ID for this sensor */
+          if (privMsg) {                                                                /** sensor has a private channel, sending more than four bytes of data */
+            char *buf = (char *)malloc(sizeof(char) * CAN_MAX_DLC);                     /** create a buffer to hold the data. */
+            sprintf(buf, "%d", nodeInfo.subModules[i].i32Value);                        /** convert signed integer to c-string */
+            send_message(privMsg, (uint8_t*) buf, CAN_MAX_DLC);                         /** send message with ID assigned by controller */
+          } else {                                                                      /** assemble data to send based on a smaller sensor value */
+            uint8_t sensorValue[2] = {0};
+            chunk16((uint16_t) nodeInfo.subModules[i].i32Value, sensorValue);           /** convert integer to byte array */
+            uint8_t* dataBytes = messageBuilder(nodeInfo.nodeID, nodeIdArrSize, sensorValue, sizeof(sensorValue) / sizeof(sensorValue[0])); /** Aassemble byte array to send with message. */
+          }
+    } 
+  } /** end for */
  
-}
+} /** end nodeCheckStatus */
 
 static void handle_rx_message(CAN_message_t &message) {
   bool msgFlag = false;
