@@ -1,24 +1,34 @@
 #include <Arduino.h>
 #include <stdio.h>
 
-#ifdef STMNODE01
-#include <STM32RTC.h>
-
-#include <IWatchdog.h>
+#ifdef STM32
 #include <stm32yyxx_ll_adc.h>
 // canbus stuff
 #include <STM32_CAN.h>
 static CAN_message_t CAN_RX_msg;
+#define CONSOLE Serial       /** Create an alias for the Serial peripheral.  */
+#endif
 
+#ifdef STNODE103
 /** Setup CAN1 interface using alternate pins. */
 STM32_CAN can1( CAN1, ALT ); // RX_SIZE_64, TX_SIZE_16
+#elif STNODE303
+/** Setup CAN1 interface using alternate pins. */
+STM32_CAN can1( CAN1, DEF ); // RX_SIZE_64, TX_SIZE_16
 
-#define CONSOLE Serial       /** Create an alias for the Serial peripheral.  */
-
+#include <STM32RTC.h>
 /* Get the rtc object */
 STM32RTC& rtc = STM32RTC::getInstance();
+#elif STNODE432
+/** Setup CAN1 interface using alternate pins. */
+STM32_CAN can1( CAN1, DEF); // RX_SIZE_64, TX_SIZE_16
 
-#elif TEENSY01
+#include <STM32RTC.h>
+/* Get the rtc object */
+STM32RTC& rtc = STM32RTC::getInstance();
+#endif
+
+#ifdef TEENSY01
 #include <Metro.h>
 #include <FlexCAN.h>
 
@@ -28,11 +38,6 @@ FlexCAN teensycan1(250000, 0);
 static CAN_message_t CAN_RX_msg;
 
 #define CONSOLE Serial       /** Create an alias for the Serial peripheral, */
-
-
-#elif
-#define CONSOLE Serial       /** Create an alias for the Serial peripheral. */
-
 #endif
 
 #include <CRC32.h>
@@ -127,14 +132,14 @@ uint8_t* getNodeID(){
     return NULL;
   }
 
-  #ifdef STMNODE01
+  #ifdef STM32
   // get unique hardware id from HAL
   UID[0] = HAL_GetUIDw0();
   UID[1] = HAL_GetUIDw1();
   UID[2] = HAL_GetUIDw2();
   #endif
   // show the user
-  // CONSOLE.printf("UID: %08x:%08x:%08x\n", UID[0], UID[1], UID[2]);
+  CONSOLE.printf("UID: %08x:%08x:%08x\n", UID[0], UID[1], UID[2]);
 
   // add UID values to CRC calculation library
   crc.add(UID[0]);
@@ -225,14 +230,17 @@ static int32_t readVoltage(int32_t VRef, uint32_t pin)
  */
 static uint32_t getEpoch() {
   #ifdef STM32
-  // Get the current epoch from the internal RTC
-  uint32_t epoch = rtc.getEpoch();
+    #ifndef STNODEF103
+    // Get the current epoch from the internal RTC
+    uint32_t epoch = rtc.getEpoch();
+    return epoch;
+    #endif
   #else
   // If this is not an STM32, return 0
   uint32_t epoch = 0;
+  return epoch;
   #endif
 
-  return epoch;
 }
 
 /**
@@ -282,7 +290,7 @@ static void send_message(const uint16_t msgID, const uint8_t *msgData, const uin
 
   digitalWrite(LED_BUILTIN, LED_ON);
 
-  #ifdef STMNODE01
+  #ifdef STM32
   // Format message
   message.id             = msgID;                                      // set message ID
   message.flags.extended = STD;                                        // 0 = standard frame, 1 = extended frame
@@ -296,19 +304,22 @@ static void send_message(const uint16_t msgID, const uint8_t *msgData, const uin
   
   memcpy(message.buf, (const uint8_t*) msgData, dlc);                  // copy data to message data field 
 
-  #ifdef STMNODE01
+  #ifdef STM32
   // Queue message for transmission
   if (can1.write(message)) {  // send message to bus, true = wait for empty mailbox
     // successful write?
+  } else {
+    CONSOLE.printf("ERR: Failed to queue message\n");
+  }
   #elif TEENSY01
   // Queue message for transmission
   if (teensycan1.write(message)) {  // send message to bus, true = wait for empty mailbox
     // successful write?
-
-  #endif
   } else {
     CONSOLE.printf("ERR: Failed to queue message\n");
   }
+
+  #endif
 
   digitalWrite(LED_BUILTIN, LED_OFF);
 
@@ -750,8 +761,66 @@ void recvMsg(uint8_t *data, size_t len){
 
 
 void setup() {
-  #ifdef STMNODE01 // TODO how do we automate this?
+  #ifdef STNODEF103 // TODO how do we automate this?
 
+  nodeInfo.nodeType  = BOX_MULTI_TVA;
+  nodeInfo.subModCnt = 3;
+  nodeInfo.featureMask[0] = 0;
+  nodeInfo.featureMask[1] = 0;
+
+  nodeInfo.subModules[0].modType = NODE_INT_VOLTAGE_SENSOR;
+  nodeInfo.subModules[0].txMsgID = DATA_INTERNAL_PCB_VOLTS;
+  nodeInfo.subModules[0].modCount = 1;
+  nodeInfo.subModules[0].sendFeatureMask = false;
+  nodeInfo.subModules[0].dataSize   = DATA_SIZE_16BITS;
+  nodeInfo.subModules[0].privMsg = false;
+
+  nodeInfo.subModules[1].modType = NODE_CPU_TEMP;
+  nodeInfo.subModules[1].txMsgID  = DATA_NODE_CPU_TEMP;
+  nodeInfo.subModules[1].modCount = 1;
+  nodeInfo.subModules[1].sendFeatureMask = false;
+  nodeInfo.subModules[1].dataSize   = DATA_SIZE_16BITS;
+  nodeInfo.subModules[1].privMsg = false;
+
+  // nodeInfo.subModules[2].modType = BUTTON_ANALOG_KNOB;
+  // nodeInfo.subModules[2].txMsgID  = SENSOR_RESERVED_72C;
+  // nodeInfo.subModules[2].modCount = 1;
+  // nodeInfo.subModules[2].sendFeatureMask = false;
+  // nodeInfo.subModules[2].dataSize   = DATA_SIZE_16BITS;
+  // nodeInfo.subModules[2].privMsg = false;
+
+  introMsgCnt = nodeInfo.subModCnt + 1; /** number of intro messages */
+  introMsgPtr = 0; // start at zero
+    
+  rtc.begin(); // initialize RTC 24H format
+
+  #elif STNODE432
+  nodeInfo.nodeType  = BOX_MULTI_4X4IO;
+  nodeInfo.subModCnt = 3;
+  nodeInfo.featureMask[0] = 0;
+  nodeInfo.featureMask[1] = 0;
+
+  nodeInfo.subModules[0].modType = NODE_INT_VOLTAGE_SENSOR;
+  nodeInfo.subModules[0].txMsgID = DATA_INTERNAL_PCB_VOLTS;
+  nodeInfo.subModules[0].modCount = 1;
+  nodeInfo.subModules[0].sendFeatureMask = false;
+  nodeInfo.subModules[0].dataSize   = DATA_SIZE_16BITS;
+  nodeInfo.subModules[0].privMsg = false;
+
+  nodeInfo.subModules[1].modType = NODE_CPU_TEMP;
+  nodeInfo.subModules[1].txMsgID  = DATA_NODE_CPU_TEMP;
+  nodeInfo.subModules[1].modCount = 1;
+  nodeInfo.subModules[1].sendFeatureMask = false;
+  nodeInfo.subModules[1].dataSize   = DATA_SIZE_16BITS;
+  nodeInfo.subModules[1].privMsg = false;
+
+  nodeInfo.subModules[2].modType = BUTTON_ANALOG_KNOB;
+  nodeInfo.subModules[2].txMsgID  = SENSOR_RESERVED_72C;
+  nodeInfo.subModules[2].modCount = 1;
+  nodeInfo.subModules[2].sendFeatureMask = false;
+  nodeInfo.subModules[2].dataSize   = DATA_SIZE_16BITS;
+  nodeInfo.subModules[2].privMsg = false;
+  #elif STNODE303
   nodeInfo.nodeType  = BOX_MULTI_IO;
   nodeInfo.subModCnt = 3;
   nodeInfo.featureMask[0] = 0;
@@ -777,34 +846,6 @@ void setup() {
   nodeInfo.subModules[2].sendFeatureMask = false;
   nodeInfo.subModules[2].dataSize   = DATA_SIZE_16BITS;
   nodeInfo.subModules[2].privMsg = false;
-
-  introMsgCnt = nodeInfo.subModCnt + 1; /** number of intro messages */
-  introMsgPtr = 0; // start at zero
-    
-  rtc.begin(); // initialize RTC 24H format
-
-  #elif STMNODE02
-  nodeInfo.nodeType  = BOX_SW_4GANG;
-  nodeInfo.subModCnt = 2;
-  
-  uint8_t* buf = (uint8_t*)FEATURE_BOX_SW_4GANG;
-  nodeInfo.featureMask[0] = buf[0];
-  nodeInfo.featureMask[1] = buf[1];
-  nodeInfo.subModCnt = 2;
-
-  nodeInfo.subModules[0].modType = OUT_HIGH_CURRENT_SW; // intro message for high current switch
-  nodeInfo.subModules[0].txMsgID = DATA_OUTPUT_SWITCH_STATE;
-  nodeInfo.subModules[0].modCount = 2;
-  nodeInfo.subModules[0].sendFeatureMask = false;
-  nodeInfo.subModules[0].dataSize   = DATA_SIZE_8BITS;
-  nodeInfo.subModules[0].privMsg = false;
-
-  nodeInfo.subModules[1].modType = OUT_LOW_CURRENT_SW; // intro message for low current switch
-  nodeInfo.subModules[1].txMsgID = DATA_OUTPUT_SWITCH_STATE;
-  nodeInfo.subModules[1].modCount = 2;
-  nodeInfo.subModules[1].sendFeatureMask = false;
-  nodeInfo.subModules[1].dataSize   = DATA_SIZE_8BITS;
-  nodeInfo.subModules[1].privMsg = false;
   #endif
 
   // these should be constants, but volatile works instead
@@ -834,7 +875,7 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT); // blue pill LED
   CONSOLE.begin(256000);
   delay(5000);
-  #ifdef STMNODE01
+  #ifdef STM32
   can1.begin(); // begin CAN bus with no auto retransmission
   can1.setBaudRate(250000);  //250KBPS
   // can1.setMBFilter(ACCEPT_ALL); // accept all messages
@@ -877,7 +918,7 @@ void loop() {
     
     nodeCheckStatus(); // handle node status
     
-    #ifdef STMNODE01
+    #ifdef STM32
     // Print out the value read
     int32_t VRef = readVref();                       // get the voltage reference value
     nodeInfo.subModules[0].i32Value = VRef;                   // store vref reading
@@ -886,7 +927,7 @@ void loop() {
     #endif
   }
 
-  #ifdef STMNODE01
+  #ifdef STM32
   while (can1.read(CAN_RX_msg) ) {
     // CONSOLE.printf("RX: MSG: %03x DATA: %u\n", CAN_RX_msg.id, CAN_RX_msg.len);
     handle_rx_message(CAN_RX_msg); // handle received message}
