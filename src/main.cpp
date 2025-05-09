@@ -230,11 +230,16 @@ static int32_t readVoltage(int32_t VRef, uint32_t pin)
  */
 static uint32_t getEpoch() {
   #ifdef STM32
-    #ifndef STNODEF103
+    #ifndef STNODE103
     // Get the current epoch from the internal RTC
     uint32_t epoch = rtc.getEpoch();
     return epoch;
+    #else
+    // If this is not an STM32, return 0
+    uint32_t epoch = 0;
+    return epoch;
     #endif
+
   #else
   // If this is not an STM32, return 0
   uint32_t epoch = 0;
@@ -443,10 +448,11 @@ static void rxOutputMode(const uint8_t outputID, const uint8_t outputMode = OUT_
  * 
  * @param ptr optional pointer for where we are in the introductions. leave blank to only send the node intro message
  */
-static void txIntroduction(int ptr = -1) {
+static void txIntroduction(int ptr = 0) {
 
   if ( ptr <= 0) {  /**  Step one introduce the node itself, then move onto modules below. */
     uint16_t txMsgID = nodeInfo.nodeType;
+    if (txMsgID == 0) return; /** bail out if we don't have a node type defined. */
     CONSOLE.printf("TX: NODE INTRO TYPE %03x PTR %i\n", txMsgID, ptr );  /** Tell the user some things. */
     uint8_t* dataBytes = messageBuilder(nodeInfo.nodeID, nodeIdArrSize, nodeInfo.featureMask, featureMaskArrSize);
 
@@ -456,7 +462,10 @@ static void txIntroduction(int ptr = -1) {
   if (ptr > 0) {                                                                /** Remaining introduction steps. */
     uint8_t modPtr = (ptr - 1);                                                 /** Reduce pointer by 1 so we start at beginning of the submodules array. */
     uint16_t txMsgID = nodeInfo.subModules[modPtr].modType;                     /** Retrieve module type. */
-
+    if (txMsgID == 0) {
+      uint8_t tmp = introMsgPtr;
+      introMsgPtr = tmp + 1; /** for some reason the pointer is calling for a module that does not exist */  
+    }
     if (txMsgID > 0) {                                                          /** Only proceed if the module is defined. */
       CONSOLE.printf("TX: MODULE INTRO TYPE %03x PTR %i\n", txMsgID, modPtr);    /** Tell the user some things. */
       if (nodeInfo.subModules[modPtr].sendFeatureMask) {                        /**  This module requires the feature mask to be sent with the introduction. */
@@ -609,8 +618,11 @@ static void handle_rx_message(CAN_message_t &message) {
 
         uint8_t epochBytes[] = {message.buf[0], message.buf[1], message.buf[2], message.buf[3]};
         uint32_t rxTime = unchunk32(epochBytes);
-        
+#ifdef STM32
+#ifndef STNODE103       
         rtc.setEpoch(rxTime); /** set onboard RTC */
+#endif
+#endif
       }
 
       if (message.len > 0) { // message contains data, check if it is for us
@@ -761,7 +773,7 @@ void recvMsg(uint8_t *data, size_t len){
 
 
 void setup() {
-  #ifdef STNODEF103 // TODO how do we automate this?
+  #ifdef STNODE103 // TODO how do we automate this?
 
   nodeInfo.nodeType  = BOX_MULTI_TVA;
   nodeInfo.subModCnt = 3;
@@ -782,17 +794,21 @@ void setup() {
   nodeInfo.subModules[1].dataSize   = DATA_SIZE_16BITS;
   nodeInfo.subModules[1].privMsg = false;
 
-  // nodeInfo.subModules[2].modType = BUTTON_ANALOG_KNOB;
-  // nodeInfo.subModules[2].txMsgID  = SENSOR_RESERVED_72C;
-  // nodeInfo.subModules[2].modCount = 1;
-  // nodeInfo.subModules[2].sendFeatureMask = false;
-  // nodeInfo.subModules[2].dataSize   = DATA_SIZE_16BITS;
-  // nodeInfo.subModules[2].privMsg = false;
+  nodeInfo.subModules[2].modType = BUTTON_ANALOG_KNOB;
+  nodeInfo.subModules[2].txMsgID  = SENSOR_RESERVED_72C;
+  nodeInfo.subModules[2].modCount = 1;
+  nodeInfo.subModules[2].sendFeatureMask = false;
+  nodeInfo.subModules[2].dataSize   = DATA_SIZE_16BITS;
+  nodeInfo.subModules[2].privMsg = false;
 
   introMsgCnt = nodeInfo.subModCnt + 1; /** number of intro messages */
   introMsgPtr = 0; // start at zero
-    
+
+#ifdef STM32
+#ifndef STNODE103
   rtc.begin(); // initialize RTC 24H format
+#endif
+#endif
 
   #elif STNODE432
   nodeInfo.nodeType  = BOX_MULTI_4X4IO;
@@ -913,8 +929,8 @@ void loop() {
 
   if ((millis() - lastMillis) > TRANSMIT_RATE_MS) {
     lastMillis = millis();
-    // CONSOLE.print(".");
-    // digitalToggle(LED_BUILTIN); // toggle LED
+    CONSOLE.print(".");
+    digitalToggle(LED_BUILTIN); // toggle LED
     
     nodeCheckStatus(); // handle node status
     
