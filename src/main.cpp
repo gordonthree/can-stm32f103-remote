@@ -877,7 +877,7 @@ void setup() {
   TIM_TypeDef *Instance = TIM2;
 #endif
   HardwareTimer *SendTimer = new HardwareTimer(Instance);
-  SendTimer->setOverflow(1, HERTZ_FORMAT); // 50 Hz
+  SendTimer->setOverflow(1, HERTZ_FORMAT); // 1 Hz
 #if ( STM32_CORE_VERSION_MAJOR < 2 )
   SendTimer->attachInterrupt(1, SendData);
   SendTimer->setMode(1, TIMER_OUTPUT_COMPARE);
@@ -888,9 +888,16 @@ void setup() {
 
   analogReadResolution(12);
 
-  pinMode(LED_BUILTIN, OUTPUT); // blue pill LED
-  CONSOLE.begin(256000);
+  #ifdef STM32
+  CONSOLE.begin(512000);
+ #else
+  CONSOLE.begin(115200);
+ #endif
+
+  pinMode(LED_BUILTIN, OUTPUT); /** Setup LED for diagnostics */
+
   delay(5000);
+  
   #ifdef STM32
   can1.begin(); // begin CAN bus with no auto retransmission
   can1.setBaudRate(250000);  //250KBPS
