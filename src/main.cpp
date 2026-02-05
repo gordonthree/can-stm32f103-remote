@@ -137,8 +137,12 @@ uint8_t* getNodeID(){
   UID[0] = HAL_GetUIDw0();
   UID[1] = HAL_GetUIDw1();
   UID[2] = HAL_GetUIDw2();
+  #else
+  return NULL; /** Not implemented on other processors */
   #endif
+
   // show the user
+  CONSOLE.println("STM32 CAN BUS NODE");
   CONSOLE.printf("UID: %08x:%08x:%08x\n", UID[0], UID[1], UID[2]);
 
   // add UID values to CRC calculation library
@@ -152,7 +156,7 @@ uint8_t* getNodeID(){
   // calculate 32-bit crc value from the uid
   int myCRC = crc.calc();
 
-  // transfer those four bytes to myNodeID array
+  // transfer those four bytes to a buffer to return 
   buf[0] = (myCRC >> 24) & 0xFF; // get first byte of CRC
   buf[1] = (myCRC >> 16) & 0xFF; // get second byte of CRC
   buf[2] = (myCRC >> 8) & 0xFF;  // get third byte of CRC
@@ -163,7 +167,8 @@ uint8_t* getNodeID(){
 
 
 
-#ifndef TEENSY01
+#ifdef STM32
+// STM32 specific ADC stuff
 static int32_t readVref() {
 #ifdef STM32U0xx
   /* On some devices Internal voltage reference calibration value not programmed
@@ -877,7 +882,7 @@ void setup() {
   TIM_TypeDef *Instance = TIM2;
 #endif
   HardwareTimer *SendTimer = new HardwareTimer(Instance);
-  SendTimer->setOverflow(1, HERTZ_FORMAT); // 50 Hz
+  SendTimer->setOverflow(1, HERTZ_FORMAT); // 1 Hz
 #if ( STM32_CORE_VERSION_MAJOR < 2 )
   SendTimer->attachInterrupt(1, SendData);
   SendTimer->setMode(1, TIMER_OUTPUT_COMPARE);
@@ -888,10 +893,18 @@ void setup() {
 
   analogReadResolution(12);
 
-  pinMode(LED_BUILTIN, OUTPUT); // blue pill LED
-  CONSOLE.begin(256000);
-  delay(5000);
   #ifdef STM32
+  CONSOLE.begin(512000);
+ #else
+  CONSOLE.begin(115200);
+ #endif
+
+  pinMode(LED_BUILTIN, OUTPUT); /** Setup LED for diagnostics */
+
+  delay(5000);
+
+  #ifdef STM32 
+  /** Setup STM32 specific CAN bus interface */
   can1.begin(); // begin CAN bus with no auto retransmission
   can1.setBaudRate(250000);  //250KBPS
   // can1.setMBFilter(ACCEPT_ALL); // accept all messages
@@ -901,14 +914,18 @@ void setup() {
   can1.setMBFilterProcessing( MB0, MSG_CTRL_SWITCHES, MASK_BITS_11_TO_8, STD ); // 0x780 watch the four MSB of the ID 
   can1.setMBFilterProcessing( MB1, MSG_REQ_INTRO, MASK_BITS_11_TO_8, STD );
 
+  #endif
+
   uint8_t* myNodeID = getNodeID();                 /** Get nodeID from unique hardware id. */
   for (uint8_t i = 0; i < sizeof(myNodeID); i++) { /** Copy temporary array into the struct. */
     nodeInfo.nodeID[i] = myNodeID[i];
   }
-
   FLAG_SEND_INTRODUCTION = true;
-  SendTimer->resume();
+
+  #ifdef STM32
+  SendTimer->resume(); /** STM32 start timer interrupt */
   #elif TEENSY01
+  /** Teensy specific CAN bus interface */
   teensycan1.begin();
   CAN_filter_t myFilter = {.id = (MSG_CTRL_IFACE<<21) | (MASK_CTRL_IFACE <<5)};
   
